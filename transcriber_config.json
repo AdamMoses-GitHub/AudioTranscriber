@@ -1,0 +1,16 @@
+{
+  "engine": "auto_gpu",
+  "model": "small",
+  "compute": "float16",
+  "file_path": "E:/Files/Startalk Radio Are We The Universe\u2019s Way of Knowing Itself.mp3",
+  "detect_date": true,
+  "chars_per_line": 80,
+  "batch_input_folder": "C:/Users/wintermute/Desktop/aygnew",
+  "batch_output_folder": "C:/Users/wintermute/Desktop/aygnewtext",
+  "batch_detect_date": true,
+  "batch_chars_per_line": 80,
+  "batch_skip_existing": true,
+  "batch_create_summary": true,
+  "batch_preserve_structure": false,
+  "batch_recursive": false
+}

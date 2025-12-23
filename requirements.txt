@@ -1,0 +1,30 @@
+# Audio Transcriber - Python Requirements
+# Install with: pip install -r requirements.txt
+
+# Core dependencies - PyTorch with CUDA support
+# For NVIDIA GPU support (recommended for faster transcription):
+torch>=2.0.0              # Install GPU version with:
+                          #   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+                          # For CPU-only (slower):
+                          #   pip install torch torchvision torchaudio
+                          # Verify GPU: python -c "import torch; print(torch.cuda.is_available())"
+
+openai-whisper>=20231117  # OpenAI's Whisper speech recognition model
+
+# Use pre-built av package to avoid compilation issues on Windows
+av>=11.0.0               # Audio/video processing (dependency of faster-whisper)
+faster-whisper>=0.9.0    # Optimized Whisper implementation (CPU/GPU)
+
+# Audio processing libraries
+pydub>=0.25.1            # Audio file manipulation and format conversion
+mutagen>=1.47.0          # Audio metadata (ID3 tags) reading
+
+# Note: tkinter is included with Python standard library
+# Note: wave module is included with Python standard library
+
+# Optional: For better audio format support
+# ffmpeg or ffmpeg-python may be needed for pydub to handle various formats
+# Install ffmpeg separately: https://ffmpeg.org/download.html
+# Or on Windows: choco install ffmpeg
+# Or on macOS: brew install ffmpeg
+# Or on Linux: sudo apt-get install ffmpeg
