@@ -461,4 +461,8 @@ For questions, issues, or suggestions, please create an issue in the repository 
 
 ---
 
-**Made with ❤️ using OpenAI Whisper**
+## Keywords
+
+<sub>audio transcription, speech-to-text, Whisper, OpenAI Whisper, Faster-Whisper, GPU acceleration, CUDA, audio processing, voice recognition, speech recognition, automatic transcription, audio files, MP3, WAV, FLAC, podcast transcription, batch processing, Python application, desktop application, GUI, command-line tool, CLI, audio converter, text extraction, metadata extraction, audio metadata, ID3 tags, file processing, transcription software, open source, machine learning, deep learning, natural language processing, real-time transcription, audio analysis, PyTorch, NVIDIA GPU, FFmpeg, audio formats, transcription accuracy</sub>
+
+
