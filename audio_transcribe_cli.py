@@ -9,6 +9,7 @@ import sys
 import time
 from pathlib import Path
 from config import Environment, ConfigManager
+from config.constants import TIMESTAMP_FORMATS, DEFAULT_TIMESTAMP_FORMAT, DEFAULT_TIMESTAMP_INTERVAL
 from models import ModelManager
 from transcription import Transcriber, BatchProcessor
 from utilities.format_utils import FormatUtils
@@ -49,7 +50,15 @@ class AudioTranscriberCLI:
         # Transcribe
         start_time = time.time()
         print("Transcribing audio...")
-        result = self.transcriber.transcribe_with_metadata(args.input, args.engine)
+        
+        # Build options dict with timestamp settings
+        options = {
+            'timestamps_enabled': args.timestamps,
+            'timestamp_format': args.timestamp_format,
+            'timestamp_interval': args.timestamp_interval
+        }
+        
+        result = self.transcriber.transcribe_with_metadata(args.input, args.engine, options)
         
         # Extract results
         if isinstance(result, dict):
@@ -160,26 +169,42 @@ class AudioTranscriberCLI:
         print(f"Recursive: {args.recursive}")
         print(f"Preserve structure: {args.preserve_structure}")
         print(f"Create summary: {args.create_summary}")
+        print(f"Timestamps enabled: {args.timestamps}")
+        if args.timestamps:
+            print(f"Timestamp format: {args.timestamp_format}")
+            print(f"Timestamp interval: {args.timestamp_interval}s")
+        
+        # Build options dict
+        options = {
+            'detect_date': args.detect_date,
+            'chars_per_line': args.chars_per_line,
+            'skip_existing': args.skip_existing,
+            'create_summary': args.create_summary,
+            'preserve_structure': args.preserve_structure,
+            'recursive': args.recursive,
+            'engine': args.engine,
+            'model': args.model,
+            'compute_type': args.compute,
+            'timestamps_enabled': args.timestamps,
+            'timestamp_format': args.timestamp_format,
+            'timestamp_interval': args.timestamp_interval
+        }
         
         # Progress callback
-        def progress_callback(current, total, filename, status):
-            print(f"[{current}/{total}] {filename} - {status}")
+        def progress_callback(current, total, filename):
+            print(f"[{current}/{total}] {filename}")
+        
+        def log_callback(message):
+            print(message)
         
         # Process batch
         start_time = time.time()
         stats = self.batch_processor.process_batch(
-            input_folder=args.input,
-            output_folder=args.output,
-            engine=args.engine,
-            model_size=args.model,
-            compute_type=args.compute,
-            detect_date=args.detect_date,
-            chars_per_line=args.chars_per_line,
-            skip_existing=args.skip_existing,
-            create_summary=args.create_summary,
-            preserve_structure=args.preserve_structure,
-            recursive=args.recursive,
-            progress_callback=progress_callback
+            args.input,
+            args.output,
+            options,
+            progress_callback=progress_callback,
+            log_callback=log_callback
         )
         
         processing_time = time.time() - start_time
@@ -188,17 +213,12 @@ class AudioTranscriberCLI:
         print("\n" + "=" * 60)
         print("BATCH PROCESSING COMPLETE")
         print("=" * 60)
-        print(f"Total files processed: {stats.get('processed', 0)}")
-        print(f"Files skipped: {stats.get('skipped', 0)}")
-        print(f"Errors: {stats.get('errors', 0)}")
+        print(f"Total files: {stats.get('total', 0)}")
+        print(f"Successful: {stats.get('successful', 0)}")
+        print(f"Failed: {stats.get('failed', 0)}")
         print(f"Total time: {FormatUtils.format_time(processing_time)}")
         
-        if stats.get('errors', 0) > 0:
-            print("\nErrors encountered:")
-            for error in stats.get('error_list', []):
-                print(f"  - {error}")
-        
-        return 0
+        return 0 if stats.get('failed', 0) == 0 else 1
     
     def show_info(self):
         """Display system information."""
@@ -296,6 +316,19 @@ Examples:
                                default=80,
                                metavar='N',
                                help='Maximum characters per line for text wrapping. Text will be broken into lines at word boundaries. Set to 0 to disable line breaks and keep original formatting (default: 80)')
+    single_parser.add_argument('--timestamps', 
+                               action='store_true', 
+                               default=False,
+                               help='Include timestamps at regular intervals throughout the transcript. Timestamps appear at the start of their own line for easy navigation')
+    single_parser.add_argument('--timestamp-format', 
+                               default=DEFAULT_TIMESTAMP_FORMAT,
+                               choices=TIMESTAMP_FORMATS,
+                               help='Format for timestamps. HH:MM:SS=[01:23:45], MM:SS=[83:45] (total minutes), timecode=[01:23:45.678] with milliseconds (default: HH:MM:SS)')
+    single_parser.add_argument('--timestamp-interval', 
+                               type=int, 
+                               default=DEFAULT_TIMESTAMP_INTERVAL,
+                               metavar='SECONDS',
+                               help='Interval in seconds between timestamps. Common values: 15, 30, 60, 120, 300, 600. First timestamp is always at 00:00:00 (default: 30)')
     
     # Batch command
     batch_parser = subparsers.add_parser('batch', 
@@ -348,6 +381,19 @@ Examples:
                               action='store_true', 
                               default=False,
                               help='Search for audio files in all subdirectories of the input folder. If disabled, only processes files directly in the input folder (non-recursive). Combine with --preserve-structure to maintain organization')
+    batch_parser.add_argument('--timestamps', 
+                              action='store_true', 
+                              default=False,
+                              help='Include timestamps at regular intervals throughout transcripts. Timestamps appear at the start of their own line for easy navigation')
+    batch_parser.add_argument('--timestamp-format', 
+                              default=DEFAULT_TIMESTAMP_FORMAT,
+                              choices=TIMESTAMP_FORMATS,
+                              help='Format for timestamps. HH:MM:SS=[01:23:45], MM:SS=[83:45] (total minutes), timecode=[01:23:45.678] with milliseconds (default: HH:MM:SS)')
+    batch_parser.add_argument('--timestamp-interval', 
+                              type=int, 
+                              default=DEFAULT_TIMESTAMP_INTERVAL,
+                              metavar='SECONDS',
+                              help='Interval in seconds between timestamps. Common values: 15, 30, 60, 120, 300, 600. First timestamp is always at 00:00:00 (default: 30)')
     
     # Info command
     info_parser = subparsers.add_parser('info', 

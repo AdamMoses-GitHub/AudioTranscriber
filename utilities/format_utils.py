@@ -88,3 +88,82 @@ class FormatUtils:
             return f"{size_mb:.1f} MB"
         else:
             return f"{size_mb / 1024:.1f} GB"
+    
+    @staticmethod
+    def format_timestamp(seconds, format_type='HH:MM:SS'):
+        """Format seconds to timestamp string.
+        
+        Args:
+            seconds: Time in seconds.
+            format_type: Format type - 'HH:MM:SS', 'MM:SS', or 'timecode'.
+            
+        Returns:
+            Formatted timestamp string.
+        """
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        millis = int((seconds % 1) * 1000)
+        
+        if format_type == 'HH:MM:SS':
+            return f"[{hours:02d}:{minutes:02d}:{secs:02d}]"
+        elif format_type == 'MM:SS':
+            total_minutes = int(seconds // 60)
+            return f"[{total_minutes:02d}:{secs:02d}]"
+        elif format_type == 'timecode':
+            return f"[{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}]"
+        else:
+            # Default to HH:MM:SS
+            return f"[{hours:02d}:{minutes:02d}:{secs:02d}]"
+    
+    @staticmethod
+    def insert_interval_timestamps(segments, interval_seconds, format_type='HH:MM:SS'):
+        """Insert timestamps at regular intervals into transcribed text.
+        
+        Args:
+            segments: List of segment dictionaries with 'start', 'end', and 'text' keys.
+            interval_seconds: Interval in seconds for timestamp insertion.
+            format_type: Format type for timestamps.
+            
+        Returns:
+            Formatted text with timestamps at specified intervals.
+        """
+        if not segments:
+            return ""
+        
+        # Start with timestamp at 0
+        result = []
+        result.append(FormatUtils.format_timestamp(0, format_type))
+        
+        current_interval = interval_seconds
+        current_text = []
+        
+        for segment in segments:
+            segment_start = segment.get('start', 0)
+            segment_end = segment.get('end', 0)
+            segment_text = segment.get('text', '').strip()
+            
+            if not segment_text:
+                continue
+            
+            # Check if we need to insert a timestamp
+            if segment_start >= current_interval:
+                # Add accumulated text before timestamp
+                if current_text:
+                    result.append(' '.join(current_text))
+                    current_text = []
+                
+                # Insert timestamp(s) for all passed intervals
+                while current_interval <= segment_start:
+                    result.append(FormatUtils.format_timestamp(current_interval, format_type))
+                    current_interval += interval_seconds
+            
+            # Add segment text
+            current_text.append(segment_text)
+        
+        # Add any remaining text
+        if current_text:
+            result.append(' '.join(current_text))
+        
+        # Join with newlines so each timestamp is on its own line
+        return '\n'.join(result)

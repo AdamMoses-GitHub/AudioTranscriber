@@ -7,6 +7,7 @@ import threading
 from utilities.format_utils import FormatUtils
 from utilities.date_parser import DateParser
 from utilities.audio_utils import AudioUtils
+from config.constants import TIMESTAMP_FORMATS, TIMESTAMP_INTERVALS, DEFAULT_TIMESTAMP_FORMAT, DEFAULT_TIMESTAMP_INTERVAL
 
 
 class SingleFileTab:
@@ -35,6 +36,9 @@ class SingleFileTab:
         # Configuration variables
         self.detect_date = tk.BooleanVar(value=True)
         self.chars_per_line = tk.IntVar(value=80)
+        self.timestamps_enabled = tk.BooleanVar(value=False)
+        self.timestamp_format = tk.StringVar(value=DEFAULT_TIMESTAMP_FORMAT)
+        self.timestamp_interval = tk.IntVar(value=DEFAULT_TIMESTAMP_INTERVAL)
         
         # Create UI
         self._create_ui()
@@ -97,6 +101,50 @@ class SingleFileTab:
                  font=("Arial", 8)).grid(row=0, column=2, sticky="w")
         ttk.Button(format_frame, text="?", width=3, command=self.show_chars_per_line_help).grid(
             row=0, column=3, padx=(5, 0))
+        
+        # Timestamp options
+        timestamp_frame = ttk.Frame(options_frame)
+        timestamp_frame.grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        
+        self.timestamps_checkbox = ttk.Checkbutton(
+            timestamp_frame, 
+            text="Include timestamps",
+            variable=self.timestamps_enabled,
+            command=self._on_timestamp_toggle
+        )
+        self.timestamps_checkbox.grid(row=0, column=0, sticky="w")
+        
+        ttk.Label(timestamp_frame, text="Format:").grid(row=0, column=1, sticky="w", padx=(20, 5))
+        self.format_combo = ttk.Combobox(
+            timestamp_frame,
+            textvariable=self.timestamp_format,
+            values=TIMESTAMP_FORMATS,
+            state="readonly",
+            width=12
+        )
+        self.format_combo.grid(row=0, column=2, sticky="w")
+        self.format_combo.bind('<<ComboboxSelected>>', lambda e: self.app.save_config())
+        
+        ttk.Label(timestamp_frame, text="Interval:").grid(row=0, column=3, sticky="w", padx=(20, 5))
+        self.interval_combo = ttk.Combobox(
+            timestamp_frame,
+            textvariable=self.timestamp_interval,
+            values=TIMESTAMP_INTERVALS,
+            state="readonly",
+            width=8
+        )
+        self.interval_combo.grid(row=0, column=4, sticky="w")
+        self.interval_combo.bind('<<ComboboxSelected>>', lambda e: self.app.save_config())
+        
+        ttk.Label(timestamp_frame, text="seconds", foreground="gray", font=("Arial", 8)).grid(
+            row=0, column=5, sticky="w", padx=(5, 0))
+        
+        ttk.Button(timestamp_frame, text="?", width=3, command=self.show_timestamp_help).grid(
+            row=0, column=6, padx=(5, 0))
+        
+        # Initially disable timestamp controls, if widgets are available
+        if hasattr(self, "format_combo") and hasattr(self, "interval_combo"):
+            self._on_timestamp_toggle()
         
         # Control buttons
         control_frame = ttk.Frame(self.frame)
@@ -189,9 +237,18 @@ class SingleFileTab:
             start_time = time.time()
             
             self.update_status("Transcribing audio...")
+            
+            # Build options dict with timestamp settings
+            options = {
+                'timestamps_enabled': self.timestamps_enabled.get(),
+                'timestamp_format': self.timestamp_format.get(),
+                'timestamp_interval': self.timestamp_interval.get()
+            }
+            
             result = self.app.transcriber.transcribe_with_metadata(
                 self.file_path,
-                self.app.engine.get()
+                self.app.engine.get(),
+                options=options
             )
             
             # Extract results
@@ -316,6 +373,13 @@ class SingleFileTab:
         """Update status message."""
         self.app.root.after(0, lambda: self.status.set(message))
     
+    def _on_timestamp_toggle(self):
+        """Handle timestamp checkbox toggle."""
+        state = "readonly" if self.timestamps_enabled.get() else "disabled"
+        self.format_combo.config(state=state)
+        self.interval_combo.config(state=state)
+        self.app.save_config()
+    
     def show_date_detection_help(self):
         """Show help dialog for date detection feature."""
         help_text = (
@@ -350,12 +414,36 @@ class SingleFileTab:
         )
         messagebox.showinfo("Characters Per Line Help", help_text, parent=self.frame)
     
+    def show_timestamp_help(self):
+        """Show help dialog for timestamp feature."""
+        help_text = (
+            "Timestamp Options\n\n"
+            "Adds timestamps at regular intervals throughout the transcript.\n\n"
+            "Format Options:\n"
+            "  • HH:MM:SS - Standard format (e.g., [01:23:45])\n"
+            "  • MM:SS - Minutes and seconds only (e.g., [83:45])\n"
+            "  • timecode - Includes milliseconds (e.g., [01:23:45.678])\n\n"
+            "Interval Options:\n"
+            "  • 15, 30, 60, 120, 300, 600 seconds\n"
+            "  • Timestamps appear at the start of their own line\n"
+            "  • First timestamp is always at 00:00:00\n\n"
+            "Use timestamps to:\n"
+            "  • Navigate long transcripts easily\n"
+            "  • Reference specific parts of the audio\n"
+            "  • Create timestamped notes\n\n"
+            "Note: Timestamps are disabled by default."
+        )
+        messagebox.showinfo("Timestamp Help", help_text, parent=self.frame)
+    
     def get_config(self):
         """Get tab configuration."""
         return {
             'file_path': self.file_path,
             'detect_date': self.detect_date.get(),
-            'chars_per_line': self.chars_per_line.get()
+            'chars_per_line': self.chars_per_line.get(),
+            'timestamps_enabled': self.timestamps_enabled.get(),
+            'timestamp_format': self.timestamp_format.get(),
+            'timestamp_interval': self.timestamp_interval.get()
         }
     
     def set_config(self, config):
@@ -371,3 +459,15 @@ class SingleFileTab:
         
         if 'chars_per_line' in config:
             self.chars_per_line.set(config['chars_per_line'])
+        
+        if 'timestamps_enabled' in config:
+            self.timestamps_enabled.set(config['timestamps_enabled'])
+        
+        if 'timestamp_format' in config:
+            self.timestamp_format.set(config['timestamp_format'])
+        
+        if 'timestamp_interval' in config:
+            self.timestamp_interval.set(config['timestamp_interval'])
+        
+        # Update timestamp control states
+        self._on_timestamp_toggle()

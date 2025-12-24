@@ -63,3 +63,11 @@ COMPUTE_TYPES = ["float16", "int8", "int8_float16"]
 
 # Available engines
 ENGINES = ["auto_gpu", "faster_whisper_gpu", "faster_whisper_cpu", "whisper_gpu", "whisper_cpu"]
+
+# Timestamp settings
+TIMESTAMP_FORMATS = ["HH:MM:SS", "MM:SS", "timecode"]
+# Available timestamp intervals (in seconds), used with IntVar in the UI:
+# 15s, 30s, 1min (60s), 2min (120s), 5min (300s), 10min (600s)
+TIMESTAMP_INTERVALS = [15, 30, 60, 120, 300, 600]
+DEFAULT_TIMESTAMP_FORMAT = "HH:MM:SS"
+DEFAULT_TIMESTAMP_INTERVAL = 30  # seconds (30s)

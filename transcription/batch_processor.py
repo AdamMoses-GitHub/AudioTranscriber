@@ -36,7 +36,8 @@ class BatchProcessor:
             input_folder: Input folder path.
             output_folder: Output folder path.
             options: Dictionary of processing options (detect_date, chars_per_line, skip_existing, 
-                    preserve_structure, recursive, create_summary, engine).
+                    preserve_structure, recursive, create_summary, engine, timestamps_enabled, 
+                    timestamp_format, timestamp_interval).
             progress_callback: Optional callback for progress updates (file_num, total, current_file).
             log_callback: Optional callback for log messages.
             
@@ -134,7 +135,7 @@ class BatchProcessor:
             
             # Transcribe
             FileUtils.ensure_directory(output_file)
-            result = self.transcriber.transcribe_with_metadata(audio_file, options.get('engine', 'auto_gpu'))
+            result = self.transcriber.transcribe_with_metadata(audio_file, options.get('engine', 'auto_gpu'), options)
             
             # Extract results
             if isinstance(result, dict):
