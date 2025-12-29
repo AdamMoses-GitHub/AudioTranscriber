@@ -38,13 +38,18 @@ def check_package(package_name, import_name=None, optional=False):
         result['installed'] = True
         result['version'] = pkg_version
     except PackageNotFoundError:
-        result['error'] = 'Not installed'
-        return result
+        # No package metadata found (common for built-in modules)
+        result['error'] = 'No package metadata'
     
-    # Check if importable
+    # Check if importable (even if no package metadata)
     try:
         import_module(import_name)
         result['importable'] = True
+        # If importable but no version, it's likely a built-in module
+        if not result['installed']:
+            result['installed'] = True
+            result['version'] = 'Built-in'
+            result['error'] = None
     except ImportError as e:
         result['error'] = f'Import error: {str(e)}'
     except Exception as e:
