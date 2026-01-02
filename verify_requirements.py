@@ -5,6 +5,7 @@ Checks and reports on all required and optional dependencies for Audio Transcrib
 import sys
 from importlib import import_module
 from importlib.metadata import version, PackageNotFoundError
+from config.constants import STATUS_SUCCESS, STATUS_ERROR, STATUS_WARNING
 
 
 def check_package(package_name, import_name=None, optional=False):
@@ -147,7 +148,7 @@ def print_section(title):
 
 def print_package_status(pkg_info):
     """Print status for a single package."""
-    status_icon = '✅' if pkg_info['importable'] else '❌'
+    status_icon = STATUS_SUCCESS if pkg_info['importable'] else STATUS_ERROR
     optional_tag = ' [OPTIONAL]' if pkg_info['optional'] else ''
     
     print(f"\n{status_icon} {pkg_info['package']}{optional_tag}")
@@ -156,13 +157,13 @@ def print_package_status(pkg_info):
     if pkg_info['installed']:
         print(f"   Version: {pkg_info['version']}")
         if pkg_info['importable']:
-            print(f"   Status: ✅ Installed and importable")
+            print(f"   Status: {STATUS_SUCCESS} Installed and importable")
         else:
-            print(f"   Status: ⚠️  Installed but cannot import")
+            print(f"   Status: {STATUS_WARNING} Installed but cannot import")
             if pkg_info['error']:
                 print(f"   Error: {pkg_info['error']}")
     else:
-        print(f"   Status: ❌ Not installed")
+        print(f"   Status: {STATUS_ERROR} Not installed")
         if pkg_info['error']:
             print(f"   Error: {pkg_info['error']}")
 
@@ -221,7 +222,7 @@ def main():
     
     for module_path, description in submodules:
         result = check_submodule(module_path, description)
-        status_icon = '✅' if result['importable'] else '❌'
+        status_icon = STATUS_SUCCESS if result['importable'] else STATUS_ERROR
         print(f"\n{status_icon} {module_path} - {description}")
         if not result['importable'] and result['error']:
             print(f"   Error: {result['error']}")
@@ -231,12 +232,12 @@ def main():
     gpu_info = check_gpu_support()
     
     if gpu_info['available']:
-        print(f"\n✅ GPU Available")
+        print(f"\n{STATUS_SUCCESS} GPU Available")
         print(f"   Device: {gpu_info['device_name']}")
         print(f"   Memory: {gpu_info['memory_gb']} GB")
         print(f"   CUDA Version: {gpu_info['cuda_version']}")
     else:
-        print(f"\n❌ No GPU Detected")
+        print(f"\n{STATUS_ERROR} No GPU Detected")
         print(f"   Status: CPU mode only (slower transcription)")
         if gpu_info['error']:
             print(f"   Error: {gpu_info['error']}")
@@ -246,10 +247,10 @@ def main():
     ffmpeg_info = check_ffmpeg()
     
     if ffmpeg_info['available']:
-        print(f"\n✅ FFmpeg Available")
+        print(f"\n{STATUS_SUCCESS} FFmpeg Available")
         print(f"   {ffmpeg_info['version']}")
     else:
-        print(f"\n⚠️  FFmpeg Not Found")
+        print(f"\n{STATUS_WARNING} FFmpeg Not Found")
         print(f"   Status: Required for advanced audio format support")
         if ffmpeg_info['error']:
             print(f"   Error: {ffmpeg_info['error']}")
@@ -272,17 +273,17 @@ def main():
     
     print(f"\nRequired Packages: {required_ok}/{required_total} OK")
     print(f"Optional Packages: {optional_ok}/{optional_total} OK")
-    print(f"GPU Support: {'✅ Yes' if gpu_info['available'] else '❌ No (CPU only)'}")
-    print(f"FFmpeg: {'✅ Available' if ffmpeg_info['available'] else '⚠️  Not found'}")
+    print(f"GPU Support: {STATUS_SUCCESS + ' Yes' if gpu_info['available'] else STATUS_ERROR + ' No (CPU only)'}")
+    print(f"FFmpeg: {STATUS_SUCCESS + ' Available' if ffmpeg_info['available'] else STATUS_WARNING + ' Not found'}")
     
     if required_ok == required_total:
-        print(f"\n✅ All required packages are installed and working!")
+        print(f"\n{STATUS_SUCCESS} All required packages are installed and working!")
     else:
-        print(f"\n❌ Some required packages are missing or not working.")
+        print(f"\n{STATUS_ERROR} Some required packages are missing or not working.")
         print(f"   Run: pip install -r requirements.txt")
     
     if optional_ok < optional_total:
-        print(f"\n⚠️  Some optional packages are missing:")
+        print(f"\n{STATUS_WARNING} Some optional packages are missing:")
         for r in optional:
             if not r['importable']:
                 print(f"   - {r['package']}")
