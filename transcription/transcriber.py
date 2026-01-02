@@ -45,7 +45,10 @@ class Transcriber:
         model, model_type = self.model_manager.get_active_model()
         
         if not model:
-            raise Exception("No model loaded")
+            raise RuntimeError(
+                "No model loaded. Please select a model in Model Configuration tab "
+                "and ensure it downloaded successfully."
+            )
         
         # Transcribe based on model type
         if model_type == 'faster_whisper':
@@ -68,11 +71,9 @@ class Transcriber:
                     options.get('timestamp_format', 'HH:MM:SS')
                 )
             else:
-                # Concatenate text without timestamps
-                text = ""
-                for seg in segment_list:
-                    text += seg['text'] + " "
-                return text.strip()
+                # Concatenate text without timestamps using join() for efficiency
+                text = " ".join(seg['text'].strip() for seg in segment_list if seg['text'].strip())
+                return text
                 
         elif model_type == 'whisper':
             result = model.transcribe(audio_file)
@@ -123,7 +124,10 @@ class Transcriber:
         model, model_type = self.model_manager.get_active_model()
         
         if not model:
-            raise Exception("No model loaded")
+            raise RuntimeError(
+                "No model loaded. Please select a model in Model Configuration tab "
+                "and ensure it downloaded successfully."
+            )
         
         # Get audio metadata
         audio_metadata = self.metadata_extractor.get_audio_metadata(audio_file)
@@ -194,7 +198,8 @@ class Transcriber:
                     options.get('timestamp_format', 'HH:MM:SS')
                 )
             else:
-                text = result['text']
+                # Concatenate text without timestamps using join() for efficiency
+                text = " ".join(seg['text'].strip() for seg in segment_list if seg['text'].strip())
             
             return {
                 'text': text,

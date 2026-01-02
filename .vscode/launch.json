@@ -1,0 +1,83 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Audio Transcriber GUI (Debug)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/audio_transcribe_gui.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [],
+            "stopOnEntry": false
+        },
+        {
+            "name": "Audio Transcriber GUI (Run)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/audio_transcribe_gui.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [],
+            "stopOnEntry": false,
+            "noDebug": true
+        },
+        {
+            "name": "Audio Transcriber CLI (Debug)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/audio_transcribe_cli.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [
+                "--help"
+            ],
+            "stopOnEntry": false
+        },
+        {
+            "name": "Run Tests (if available)",
+            "type": "python",
+            "request": "launch",
+            "module": "pytest",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "-v",
+                "--tb=short"
+            ],
+            "justMyCode": false
+        },
+        {
+            "name": "Verify Requirements",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/verify_requirements.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        }
+    ],
+    "compounds": [
+        {
+            "name": "GUI + Console (Debug)",
+            "configurations": [
+                "Audio Transcriber GUI (Debug)",
+                "Python: Current File"
+            ]
+        }
+    ]
+}

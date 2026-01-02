@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 import threading
-from config.constants import MODEL_SPECS, MODEL_SIZES, COMPUTE_TYPES, ENGINES
+from config.constants import MODEL_SPECS, MODEL_SIZES, COMPUTE_TYPES, ENGINES, STATUS_SUCCESS, STATUS_ERROR
 from config.environment import WHISPER_AVAILABLE, FASTER_WHISPER_AVAILABLE
 
 
@@ -44,13 +44,13 @@ class ModelConfigTab:
         lib_grid = ttk.Frame(lib_frame)
         lib_grid.grid(row=0, column=0, sticky="ew")
         
-        whisper_status = "✅ Installed" if WHISPER_AVAILABLE else "❌ Not Installed"
+        whisper_status = f"{STATUS_SUCCESS} Installed" if WHISPER_AVAILABLE else f"{STATUS_ERROR} Not Installed"
         whisper_color = "green" if WHISPER_AVAILABLE else "red"
         ttk.Label(lib_grid, text="OpenAI Whisper:", font=("Arial", 9)).grid(row=0, column=0, sticky="w", padx=(0, 10))
         ttk.Label(lib_grid, text=whisper_status, font=("Arial", 9, "bold"),
                  foreground=whisper_color).grid(row=0, column=1, sticky="w")
         
-        faster_status = "✅ Installed" if FASTER_WHISPER_AVAILABLE else "❌ Not Installed"
+        faster_status = f"{STATUS_SUCCESS} Installed" if FASTER_WHISPER_AVAILABLE else f"{STATUS_ERROR} Not Installed"
         faster_color = "green" if FASTER_WHISPER_AVAILABLE else "red"
         ttk.Label(lib_grid, text="Faster-Whisper:", font=("Arial", 9)).grid(row=0, column=2, sticky="w", padx=(20, 10))
         ttk.Label(lib_grid, text=faster_status, font=("Arial", 9, "bold"),
@@ -122,7 +122,7 @@ class ModelConfigTab:
             option_frame = ttk.Frame(container)
             option_frame.grid(row=i+1, column=0, sticky="w", pady=2)
             
-            status = "✅" if available else "❌"
+            status = STATUS_SUCCESS if available else STATUS_ERROR
             rb_state = "normal" if available else "disabled"
             
             rb = ttk.Radiobutton(option_frame, text=f"{status} {text}",
@@ -236,10 +236,10 @@ class ModelConfigTab:
         
         info_text += "Download Status:\n"
         if WHISPER_AVAILABLE:
-            status = "✅ Downloaded" if whisper_dl else "❌ Not Downloaded"
+            status = f"{STATUS_SUCCESS} Downloaded" if whisper_dl else f"{STATUS_ERROR} Not Downloaded"
             info_text += f"  • Whisper:        {status}\n"
         if FASTER_WHISPER_AVAILABLE:
-            status = "✅ Downloaded" if faster_whisper_dl else "❌ Not Downloaded"
+            status = f"{STATUS_SUCCESS} Downloaded" if faster_whisper_dl else f"{STATUS_ERROR} Not Downloaded"
             info_text += f"  • Faster-Whisper: {status}\n"
         
         if not whisper_dl and not faster_whisper_dl:
@@ -258,13 +258,13 @@ class ModelConfigTab:
             info_text += f"Your GPU VRAM:     {gpu_info['memory_gb']:.1f}GB\n"
             
             if model_size == "base":
-                info_text += "\n✅ RECOMMENDED: Base model offers excellent balance of speed and accuracy.\n"
+                info_text += f"\n{STATUS_SUCCESS} RECOMMENDED: Base model offers excellent balance of speed and accuracy.\n"
             elif model_size == "tiny":
                 info_text += "\n⚡ FASTEST: Great for quick drafts or testing.\n"
             elif model_size in ["large-v3", "turbo"] and gpu_info['memory_gb'] < 8:
                 info_text += "\n⚠️  WARNING: This model may exceed your GPU memory.\n"
         else:
-            info_text += "\n❌ No GPU detected - CPU processing will be slower\n"
+            info_text += f"\n{STATUS_ERROR} No GPU detected - CPU processing will be slower\n"
             info_text += "💡 Consider 'tiny' or 'base' models for CPU usage\n"
         
         info_text += f"\n{'-'*63}\n"
@@ -310,12 +310,12 @@ class ModelConfigTab:
                 self.app.compute_type.get()
             )
             self.app.root.after(0, lambda: self.download_status_label.config(
-                text=f"✅ {model_size} model downloaded successfully!", foreground="green"))
+                text=f"{STATUS_SUCCESS} {model_size} model downloaded successfully!", foreground="green"))
             self.app.root.after(3000, lambda: self.download_status_label.config(text=""))
             self.app.root.after(0, self.update_model_info)
         except Exception as e:
             self.app.root.after(0, lambda: self.download_status_label.config(
-                text=f"❌ Download failed: {str(e)}", foreground="red"))
+                text=f"{STATUS_ERROR} Download failed: {str(e)}", foreground="red"))
             self.app.root.after(0, lambda e=e: messagebox.showerror("Download Error", f"Failed to download model: {e}"))
     
     def _download_all_worker(self):
@@ -337,7 +337,7 @@ class ModelConfigTab:
         
         if len(failed_models) == 0:
             self.app.root.after(0, lambda: self.download_status_label.config(
-                text=f"✅ All {len(MODEL_SIZES)} models downloaded successfully!", foreground="green"))
+                text=f"{STATUS_SUCCESS} All {len(MODEL_SIZES)} models downloaded successfully!", foreground="green"))
             self.app.root.after(0, lambda: messagebox.showinfo(
                 "Download Complete",
                 f"Successfully downloaded all {len(MODEL_SIZES)} models!"))

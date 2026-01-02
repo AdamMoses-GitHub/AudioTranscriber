@@ -5,6 +5,7 @@ from utilities.file_utils import FileUtils
 from utilities.format_utils import FormatUtils
 from utilities.date_parser import DateParser
 from utilities.audio_utils import AudioUtils
+from config.constants import STATUS_SKIPPED, BYTES_PER_MB
 
 
 class BatchProcessor:
@@ -126,12 +127,12 @@ class BatchProcessor:
             # Skip if exists
             if options.get('skip_existing', True) and os.path.exists(output_file):
                 if log_callback:
-                    log_callback(f"⏭️  Skipped (already exists): {os.path.basename(output_file)}")
+                    log_callback(f"{STATUS_SKIPPED} Skipped (already exists): {os.path.basename(output_file)}")
                 self.processing_times.append(0)
                 return True
             
             # Get file size
-            file_size = os.path.getsize(audio_file) / (1024 * 1024)  # MB
+            file_size = os.path.getsize(audio_file) / BYTES_PER_MB  # MB
             
             # Transcribe
             FileUtils.ensure_directory(output_file)

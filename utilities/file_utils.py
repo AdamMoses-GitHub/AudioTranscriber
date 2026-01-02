@@ -30,8 +30,12 @@ class FileUtils:
                     file_path = os.path.join(folder, file)
                     if os.path.isfile(file_path) and os.path.splitext(file)[1].lower() in AUDIO_EXTENSIONS:
                         audio_files.append(file_path)
-            except Exception:
-                pass
+            except FileNotFoundError:
+                print(f"Folder not found: {folder}")
+            except PermissionError:
+                print(f"Permission denied accessing folder: {folder}")
+            except Exception as e:
+                print(f"Error reading audio files from {folder}: {e}")
         
         return sorted(audio_files)
     
@@ -57,7 +61,15 @@ class FileUtils:
         
         Args:
             file_path: File path to ensure directory for.
+            
+        Raises:
+            ValueError: If file_path is None or empty.
         """
+        if not file_path:
+            raise ValueError("file_path cannot be None or empty")
         directory = os.path.dirname(file_path)
         if directory:
-            os.makedirs(directory, exist_ok=True)
+            try:
+                os.makedirs(directory, exist_ok=True)
+            except OSError as e:
+                print(f"Error creating directory {directory}: {e}")

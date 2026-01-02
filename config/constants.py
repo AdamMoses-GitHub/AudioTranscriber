@@ -1,5 +1,11 @@
 """Constants for Audio Transcriber application."""
 
+# Emoji/Symbol constants for UI feedback
+STATUS_SUCCESS = "✅"
+STATUS_ERROR = "❌"
+STATUS_SKIPPED = "⏭️"
+STATUS_WARNING = "⚠️"
+
 # Audio file extensions supported
 AUDIO_EXTENSIONS = {'.mp3', '.wav', '.m4a', '.flac', '.aac', '.ogg', '.webm'}
 
@@ -71,3 +77,12 @@ TIMESTAMP_FORMATS = ["HH:MM:SS", "MM:SS", "timecode"]
 TIMESTAMP_INTERVALS = [15, 30, 60, 120, 300, 600]
 DEFAULT_TIMESTAMP_FORMAT = "HH:MM:SS"
 DEFAULT_TIMESTAMP_INTERVAL = 30  # seconds (30s)
+
+# Time constants (in seconds)
+SECONDS_PER_MINUTE = 60
+SECONDS_PER_HOUR = 3600
+
+# File size constants (in bytes)
+BYTES_PER_KB = 1024
+BYTES_PER_MB = 1024 * 1024
+BYTES_PER_GB = 1024 * 1024 * 1024

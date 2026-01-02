@@ -27,8 +27,14 @@ class ConfigManager:
                 with open(self.config_file, 'r', encoding='utf-8') as f:
                     self.config = json.load(f)
                 return True
-        except Exception:
-            pass
+        except FileNotFoundError:
+            print(f"Config file not found: {self.config_file}")
+        except json.JSONDecodeError as e:
+            print(f"Invalid JSON in config file: {e}")
+        except IOError as e:
+            print(f"Error reading config file: {e}")
+        except Exception as e:
+            print(f"Unexpected error loading config: {e}")
         return False
     
     def save(self, config_dict):
@@ -42,8 +48,12 @@ class ConfigManager:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config_dict, f, indent=2)
             return True
-        except Exception:
-            pass
+        except TypeError as e:
+            print(f"Config contains non-serializable values: {e}")
+        except IOError as e:
+            print(f"Error writing config file: {e}")
+        except Exception as e:
+            print(f"Unexpected error saving config: {e}")
         return False
     
     def get(self, key, default=None):
