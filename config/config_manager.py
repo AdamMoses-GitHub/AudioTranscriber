@@ -28,13 +28,17 @@ class ConfigManager:
                     self.config = json.load(f)
                 return True
         except FileNotFoundError:
-            print(f"Config file not found: {self.config_file}")
+            import logging
+            logging.warning(f"Config file not found: {self.config_file}")
         except json.JSONDecodeError as e:
-            print(f"Invalid JSON in config file: {e}")
+            import logging
+            logging.error(f"Invalid JSON in config file: {e}")
         except IOError as e:
-            print(f"Error reading config file: {e}")
+            import logging
+            logging.error(f"Error reading config file: {e}")
         except Exception as e:
-            print(f"Unexpected error loading config: {e}")
+            import logging
+            logging.error(f"Unexpected error loading config: {e}")
         return False
     
     def save(self, config_dict):

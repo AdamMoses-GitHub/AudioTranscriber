@@ -38,6 +38,11 @@ class AudioTranscriberCLI:
             print(f"Error: File not found: {args.input}")
             return 1
         
+        # Validate timestamp interval
+        if args.timestamp_interval <= 0:
+            print(f"Error: timestamp-interval must be a positive integer, got {args.timestamp_interval}")
+            return 1
+        
         print(f"Transcribing: {args.input}")
         print(f"Engine: {args.engine}")
         print(f"Model: {args.model}")
@@ -108,7 +113,7 @@ class AudioTranscriberCLI:
         if duration > 0:
             final_text += f"Duration:          {FormatUtils.format_time(duration)}\n"
         final_text += f"Processing Time:   {FormatUtils.format_time(processing_time)}\n"
-        if duration > 0:
+        if duration > 0 and processing_time > 0:
             speed_ratio = duration / processing_time
             final_text += f"Speed:             {speed_ratio:.1f}x real-time\n"
         final_text += f"Engine:            {args.engine}\n"
@@ -158,6 +163,11 @@ class AudioTranscriberCLI:
         
         if not os.path.isdir(args.input):
             print(f"Error: Input must be a directory for batch processing: {args.input}")
+            return 1
+        
+        # Validate timestamp interval
+        if args.timestamp_interval <= 0:
+            print(f"Error: timestamp-interval must be a positive integer, got {args.timestamp_interval}")
             return 1
         
         print(f"Batch processing: {args.input}")

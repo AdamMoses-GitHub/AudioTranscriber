@@ -199,7 +199,7 @@ class Transcriber:
                 )
             else:
                 # Concatenate text without timestamps using join() for efficiency
-                text = " ".join(seg['text'].strip() for seg in segment_list if seg['text'].strip())
+                text = result.get('text', '')
             
             return {
                 'text': text,

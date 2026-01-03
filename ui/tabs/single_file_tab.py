@@ -302,7 +302,7 @@ class SingleFileTab:
             if duration > 0:
                 final_text += f"Duration:          {FormatUtils.format_time(duration)}\n"
             final_text += f"Processing Time:   {FormatUtils.format_time(processing_time)}\n"
-            if duration > 0:
+            if duration > 0 and processing_time > 0:
                 speed_ratio = duration / processing_time
                 final_text += f"Speed:             {speed_ratio:.1f}x real-time\n"
             final_text += f"Engine:            {self.app.engine.get()}\n"
