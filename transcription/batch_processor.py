@@ -1,6 +1,7 @@
 """Batch processor for transcribing multiple audio files."""
 import os
 import time
+from typing import Dict, Callable, Optional, List
 from utilities.file_utils import FileUtils
 from utilities.format_utils import FormatUtils
 from utilities.date_parser import DateParser
@@ -169,45 +170,26 @@ class BatchProcessor:
             process_time = time.time() - start_time
             self.processing_times.append(process_time)
             
-            # Save with comprehensive metadata
+            # Save with comprehensive metadata using centralized formatter
             with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(f"Transcript of: {file_name}\n")
+                # Build metadata header using centralized function
+                file_size_mb = os.path.getsize(audio_file) / BYTES_PER_MB
+                audio_metadata['file_size_bytes'] = os.path.getsize(audio_file)
                 
-                if detected_date:
-                    f.write(f"Recording Date: {detected_date.strftime('%Y-%m-%d')} ({day_of_week})\n")
-                
-                f.write(f"Transcribed: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write("\n--- TRANSCRIPTION METADATA ---\n")
-                f.write(f"File Size:         {file_size:.2f} MB\n")
-                
-                # Add audio format information
-                audio_info = AudioUtils.format_audio_info(audio_metadata)
-                if audio_info != "Unknown":
-                    f.write(f"Audio Format:      {audio_info}\n")
-                
-                # Add MP3 tag information if available
-                mp3_tags = AudioUtils.format_mp3_tags(audio_metadata)
-                if mp3_tags:
-                    f.write(f"MP3 Tags:\n{mp3_tags}\n")
-                
-                if duration > 0:
-                    f.write(f"Duration:          {FormatUtils.format_time(duration)}\n")
-                f.write(f"Processing Time:   {FormatUtils.format_time(process_time)}\n")
-                
-                if duration > 0 and process_time > 0:
-                    speed_ratio = duration / process_time
-                    f.write(f"Speed:             {speed_ratio:.1f}x real-time\n")
-                
-                f.write(f"Engine:            {options.get('engine', 'auto_gpu')}\n")
-                f.write(f"Model:             {options.get('model', 'base')}\n")
-                f.write(f"Compute Precision: {options.get('compute_type', 'float16')}\n")
-                f.write(f"Language:          {language}\n")
-                
-                if avg_confidence is not None:
-                    confidence_pct = (1 + avg_confidence) * 100
-                    f.write(f"Confidence:        {confidence_pct:.1f}%\n")
-                
-                f.write("=" * 60 + "\n\n")
+                metadata_header = FormatUtils.build_transcript_metadata(
+                    file_name=file_name,
+                    audio_metadata=audio_metadata,
+                    duration=duration,
+                    process_time=process_time,
+                    engine=options.get('engine', 'auto_gpu'),
+                    model=options.get('model', 'base'),
+                    compute_type=options.get('compute_type', 'float16'),
+                    language=language,
+                    avg_confidence=avg_confidence,
+                    detected_date=detected_date,
+                    day_of_week=day_of_week
+                )
+                f.write(metadata_header)
                 f.write(formatted_text)
             
             if log_callback:

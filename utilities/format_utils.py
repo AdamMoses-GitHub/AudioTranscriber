@@ -176,3 +176,83 @@ class FormatUtils:
         
         # Join with newlines so each timestamp is on its own line
         return '\n'.join(result)
+    
+    @staticmethod
+    def build_transcript_metadata(file_name: str, audio_metadata: dict, duration: float, 
+                                   process_time: float, engine: str, model: str, 
+                                   compute_type: str, language: str, 
+                                   avg_confidence: float = None, detected_date = None, 
+                                   day_of_week: str = None) -> str:
+        """Build comprehensive metadata header for transcript files.
+        
+        Centralizes the common metadata formatting logic used across transcriber
+        and batch processor to ensure consistency and reduce code duplication.
+        
+        Args:
+            file_name: Name of the audio file.
+            audio_metadata: Dictionary with audio metadata (sample_rate, channels, etc).
+            duration: Audio duration in seconds.
+            process_time: Transcription processing time in seconds.
+            engine: Engine used for transcription.
+            model: Model name used.
+            compute_type: Compute precision used.
+            language: Detected language.
+            avg_confidence: Average confidence score (optional).
+            detected_date: Detected date from filename (optional, datetime object).
+            day_of_week: Detected day of week (optional).
+            
+        Returns:
+            Formatted metadata header string.
+        """
+        from utilities.audio_utils import AudioUtils
+        from config.constants import BYTES_PER_MB
+        import time
+        import os
+        
+        lines = []
+        lines.append(f"Transcript of: {file_name}\n")
+        
+        if detected_date:
+            lines.append(f"Recording Date: {detected_date.strftime('%Y-%m-%d')} ({day_of_week})\n")
+        
+        lines.append(f"Transcribed: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        lines.append("\n--- TRANSCRIPTION METADATA ---\n")
+        
+        # File size
+        file_size_mb = audio_metadata.get('file_size_bytes', 0) / BYTES_PER_MB
+        lines.append(f"File Size:         {file_size_mb:.2f} MB\n")
+        
+        # Audio format information
+        audio_info = AudioUtils.format_audio_info(audio_metadata)
+        if audio_info != "Unknown":
+            lines.append(f"Audio Format:      {audio_info}\n")
+        
+        # MP3 tag information if available
+        mp3_tags = AudioUtils.format_mp3_tags(audio_metadata)
+        if mp3_tags:
+            lines.append(f"MP3 Tags:\n{mp3_tags}\n")
+        
+        # Duration and processing time
+        if duration > 0:
+            lines.append(f"Duration:          {FormatUtils.format_time(duration)}\n")
+        lines.append(f"Processing Time:   {FormatUtils.format_time(process_time)}\n")
+        
+        # Speed ratio
+        if duration > 0 and process_time > 0:
+            speed_ratio = duration / process_time
+            lines.append(f"Speed:             {speed_ratio:.1f}x real-time\n")
+        
+        # Engine and model info
+        lines.append(f"Engine:            {engine}\n")
+        lines.append(f"Model:             {model}\n")
+        lines.append(f"Compute Precision: {compute_type}\n")
+        lines.append(f"Language:          {language}\n")
+        
+        # Confidence score
+        if avg_confidence is not None:
+            confidence_pct = (1 + avg_confidence) * 100
+            lines.append(f"Confidence:        {confidence_pct:.1f}%\n")
+        
+        lines.append("=" * 60 + "\n\n")
+        
+        return ''.join(lines)

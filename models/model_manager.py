@@ -1,6 +1,7 @@
 """Model manager for Audio Transcriber."""
 import torch
 from pathlib import Path
+from typing import Tuple, Optional, Any
 from config.environment import WHISPER_AVAILABLE, FASTER_WHISPER_AVAILABLE
 
 if WHISPER_AVAILABLE:
@@ -13,17 +14,17 @@ if FASTER_WHISPER_AVAILABLE:
 class ModelManager:
     """Manages Whisper model loading, caching, and cleanup."""
     
-    def __init__(self, environment):
+    def __init__(self, environment: Any) -> None:
         """Initialize model manager.
         
         Args:
             environment: Environment instance with GPU detection.
         """
         self.environment = environment
-        self.whisper_model = None
-        self.faster_whisper_model = None
+        self.whisper_model: Optional[Any] = None
+        self.faster_whisper_model: Optional[Any] = None
         
-    def load_model(self, engine, model_size, compute_type):
+    def load_model(self, engine: str, model_size: str, compute_type: str) -> None:
         """Load transcription model.
         
         Args:
@@ -52,7 +53,7 @@ class ModelManager:
             device = self.environment.device if actual_engine.endswith("_gpu") else "cpu"
             self.whisper_model = whisper.load_model(model_size, device=device)
     
-    def cleanup_model(self):
+    def cleanup_model(self) -> None:
         """Clean up models and free GPU memory."""
         if self.faster_whisper_model:
             del self.faster_whisper_model
@@ -63,7 +64,7 @@ class ModelManager:
         if self.environment.gpu_available:
             torch.cuda.empty_cache()
     
-    def check_model_downloaded(self, model_size):
+    def check_model_downloaded(self, model_size: str) -> Tuple[bool, bool]:
         """Check if a model is already downloaded.
         
         Args:
@@ -94,7 +95,7 @@ class ModelManager:
         
         return whisper_downloaded, faster_whisper_downloaded
     
-    def download_model(self, model_size, engine, compute_type):
+    def download_model(self, model_size: str, engine: str, compute_type: str) -> None:
         """Download a specific model.
         
         Args:
@@ -128,7 +129,7 @@ class ModelManager:
         if self.environment.gpu_available:
             torch.cuda.empty_cache()
     
-    def get_active_model(self):
+    def get_active_model(self) -> Tuple[Optional[Any], Optional[str]]:
         """Get the currently active model.
         
         Returns:

@@ -1,5 +1,6 @@
 """File utilities for Audio Transcriber."""
 import os
+from typing import List
 from config.constants import AUDIO_EXTENSIONS
 
 
@@ -7,7 +8,7 @@ class FileUtils:
     """Utilities for file operations."""
     
     @staticmethod
-    def get_audio_files(folder, recursive=False):
+    def get_audio_files(folder: str, recursive: bool = False) -> List[str]:
         """Get list of audio files in a folder.
         
         Args:
@@ -17,7 +18,7 @@ class FileUtils:
         Returns:
             Sorted list of audio file paths.
         """
-        audio_files = []
+        audio_files: List[str] = []
         
         if recursive:
             for root, dirs, files in os.walk(folder):
@@ -43,7 +44,7 @@ class FileUtils:
         return sorted(audio_files)
     
     @staticmethod
-    def get_relative_path(file_path, base_folder):
+    def get_relative_path(file_path: str, base_folder: str) -> str:
         """Get relative path from base folder.
         
         Args:
@@ -59,7 +60,7 @@ class FileUtils:
             return os.path.basename(file_path)
     
     @staticmethod
-    def ensure_directory(file_path):
+    def ensure_directory(file_path: str) -> None:
         """Ensure directory exists for a file path.
         
         Args:
