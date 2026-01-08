@@ -1,6 +1,9 @@
 """Metadata extractor for audio files."""
 import os
 from config.environment import PYDUB_AVAILABLE, WAVE_AVAILABLE, MUTAGEN_AVAILABLE
+from config.logger import get_logger
+
+logger = get_logger(__name__)
 
 if PYDUB_AVAILABLE:
     from pydub import AudioSegment
@@ -49,8 +52,7 @@ class MetadataExtractor:
                     if 'TALB' in audio:  # Album
                         metadata['album'] = str(audio['TALB'])
                 except Exception as e:
-                    import logging
-                    logging.debug(f"Error extracting ID3 tags: {e}")
+                    logger.debug(f"Error extracting ID3 tags: {e}")
             
             # Try pydub for common formats
             if PYDUB_AVAILABLE:
@@ -60,8 +62,7 @@ class MetadataExtractor:
                     metadata['sample_rate'] = audio.frame_rate
                     metadata['bitrate'] = audio.frame_rate * audio.frame_width * 8 * audio.channels // 1000
                 except Exception as e:
-                    import logging
-                    logging.debug(f"Error extracting metadata with pydub: {e}")
+                    logger.debug(f"Error extracting metadata with pydub: {e}")
             
             # Fallback for WAV files
             if file_ext == '.wav' and WAVE_AVAILABLE:
@@ -70,11 +71,9 @@ class MetadataExtractor:
                         metadata['channels'] = wav.getnchannels()
                         metadata['sample_rate'] = wav.getframerate()
                 except Exception as e:
-                    import logging
-                    logging.debug(f"Error extracting WAV metadata: {e}")
+                    logger.debug(f"Error extracting WAV metadata: {e}")
                     
         except Exception as e:
-            import logging
-            logging.debug(f"Error extracting audio metadata from {audio_file}: {e}")
+            logger.debug(f"Error extracting audio metadata from {audio_file}: {e}")
             
         return metadata

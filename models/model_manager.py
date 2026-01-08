@@ -33,16 +33,7 @@ class ModelManager:
             compute_type: Compute precision (float16, int8, int8_float16).
         """
         # Resolve auto_gpu to specific engine
-        actual_engine = engine
-        if engine == "auto_gpu":
-            if FASTER_WHISPER_AVAILABLE and self.environment.gpu_available:
-                actual_engine = "faster_whisper_gpu"
-            elif WHISPER_AVAILABLE and self.environment.gpu_available:
-                actual_engine = "whisper_gpu"
-            elif FASTER_WHISPER_AVAILABLE:
-                actual_engine = "faster_whisper_cpu"
-            elif WHISPER_AVAILABLE:
-                actual_engine = "whisper_cpu"
+        actual_engine = self.environment.resolve_engine(engine)
         
         # Load appropriate model
         if actual_engine.startswith("faster_whisper"):
@@ -104,16 +95,7 @@ class ModelManager:
             compute_type: Compute precision.
         """
         # Resolve auto_gpu
-        actual_engine = engine
-        if engine == "auto_gpu":
-            if FASTER_WHISPER_AVAILABLE and self.environment.gpu_available:
-                actual_engine = "faster_whisper_gpu"
-            elif WHISPER_AVAILABLE and self.environment.gpu_available:
-                actual_engine = "whisper_gpu"
-            elif FASTER_WHISPER_AVAILABLE:
-                actual_engine = "faster_whisper_cpu"
-            elif WHISPER_AVAILABLE:
-                actual_engine = "whisper_cpu"
+        actual_engine = self.environment.resolve_engine(engine)
         
         # Download by loading the model
         if actual_engine.startswith("faster_whisper") and FASTER_WHISPER_AVAILABLE:

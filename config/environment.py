@@ -78,3 +78,24 @@ class Environment:
             'whisper': self.whisper_available,
             'faster_whisper': self.faster_whisper_available
         }
+    
+    def resolve_engine(self, engine: str) -> str:
+        """Resolve 'auto_gpu' to specific engine based on availability.
+        
+        Args:
+            engine: Engine type (auto_gpu, whisper_gpu, whisper_cpu, faster_whisper_gpu, faster_whisper_cpu).
+            
+        Returns:
+            Resolved engine type.
+        """
+        if engine == "auto_gpu":
+            if FASTER_WHISPER_AVAILABLE and self.gpu_available:
+                return "faster_whisper_gpu"
+            elif WHISPER_AVAILABLE and self.gpu_available:
+                return "whisper_gpu"
+            elif FASTER_WHISPER_AVAILABLE:
+                return "faster_whisper_cpu"
+            elif WHISPER_AVAILABLE:
+                return "whisper_cpu"
+        
+        return engine

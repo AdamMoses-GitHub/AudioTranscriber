@@ -30,16 +30,7 @@ class Transcriber:
             Transcribed text string.
         """
         # Resolve auto_gpu
-        actual_engine = engine
-        if engine == "auto_gpu":
-            if FASTER_WHISPER_AVAILABLE and self.environment.gpu_available:
-                actual_engine = "faster_whisper_gpu"
-            elif WHISPER_AVAILABLE and self.environment.gpu_available:
-                actual_engine = "whisper_gpu"
-            elif FASTER_WHISPER_AVAILABLE:
-                actual_engine = "faster_whisper_cpu"
-            elif WHISPER_AVAILABLE:
-                actual_engine = "whisper_cpu"
+        actual_engine = self.environment.resolve_engine(engine)
         
         # Get active model
         model, model_type = self.model_manager.get_active_model()
@@ -109,16 +100,7 @@ class Transcriber:
             Dictionary with text, language, duration, confidence, and audio metadata.
         """
         # Resolve auto_gpu
-        actual_engine = engine
-        if engine == "auto_gpu":
-            if FASTER_WHISPER_AVAILABLE and self.environment.gpu_available:
-                actual_engine = "faster_whisper_gpu"
-            elif WHISPER_AVAILABLE and self.environment.gpu_available:
-                actual_engine = "whisper_gpu"
-            elif FASTER_WHISPER_AVAILABLE:
-                actual_engine = "faster_whisper_cpu"
-            elif WHISPER_AVAILABLE:
-                actual_engine = "whisper_cpu"
+        actual_engine = self.environment.resolve_engine(engine)
         
         # Get active model
         model, model_type = self.model_manager.get_active_model()

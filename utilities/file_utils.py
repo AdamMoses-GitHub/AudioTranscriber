@@ -2,6 +2,9 @@
 import os
 from typing import List
 from config.constants import AUDIO_EXTENSIONS
+from config.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class FileUtils:
@@ -32,14 +35,11 @@ class FileUtils:
                     if os.path.isfile(file_path) and os.path.splitext(file)[1].lower() in AUDIO_EXTENSIONS:
                         audio_files.append(file_path)
             except FileNotFoundError:
-                import logging
-                logging.error(f"Folder not found: {folder}")
+                logger.error(f"Folder not found: {folder}")
             except PermissionError:
-                import logging
-                logging.error(f"Permission denied accessing folder: {folder}")
+                logger.error(f"Permission denied accessing folder: {folder}")
             except Exception as e:
-                import logging
-                logging.error(f"Error reading audio files from {folder}: {e}")
+                logger.error(f"Error reading audio files from {folder}: {e}")
         
         return sorted(audio_files)
     

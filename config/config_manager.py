@@ -1,6 +1,9 @@
 """Configuration manager for Audio Transcriber."""
 import os
 import json
+from .logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ConfigManager:
@@ -28,17 +31,13 @@ class ConfigManager:
                     self.config = json.load(f)
                 return True
         except FileNotFoundError:
-            import logging
-            logging.warning(f"Config file not found: {self.config_file}")
+            logger.warning(f"Config file not found: {self.config_file}")
         except json.JSONDecodeError as e:
-            import logging
-            logging.error(f"Invalid JSON in config file: {e}")
+            logger.error(f"Invalid JSON in config file: {e}")
         except IOError as e:
-            import logging
-            logging.error(f"Error reading config file: {e}")
+            logger.error(f"Error reading config file: {e}")
         except Exception as e:
-            import logging
-            logging.error(f"Unexpected error loading config: {e}")
+            logger.error(f"Unexpected error loading config: {e}")
         return False
     
     def save(self, config_dict):
