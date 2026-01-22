@@ -229,11 +229,7 @@ class AudioTranscriberCLI:
         print("\nAvailable Engines:")
         engines = ['whisper', 'faster_whisper', 'auto_gpu']
         for engine in engines:
-            available = "✓" if (
-                (engine == 'whisper' and self.environment.whisper_available) or
-                (engine == 'faster_whisper' and self.environment.faster_whisper_available) or
-                engine == 'auto_gpu'
-            ) else "✗"
+            available = "✓" if self.environment.is_engine_available(engine) else "✗"
             print(f"  {available} {engine}")
 
 

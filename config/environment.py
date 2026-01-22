@@ -99,3 +99,20 @@ class Environment:
                 return "whisper_cpu"
         
         return engine
+    
+    def is_engine_available(self, engine: str) -> bool:
+        """Check if a specific transcription engine is available.
+        
+        Args:
+            engine: Engine name ('whisper', 'faster_whisper', 'auto_gpu').
+            
+        Returns:
+            True if engine is available, False otherwise.
+        """
+        if engine == 'auto_gpu':
+            return True  # auto_gpu always available as fallback
+        elif engine == 'whisper':
+            return self.whisper_available
+        elif engine == 'faster_whisper':
+            return self.faster_whisper_available
+        return False
