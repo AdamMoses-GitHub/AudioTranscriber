@@ -6,6 +6,36 @@ class FormatUtils:
     """Utilities for text and time formatting."""
     
     @staticmethod
+    def extract_transcription_results(result):
+        """Extract transcription results from transcriber output.
+        
+        Centralizes result parsing to handle both dict and string return types,
+        providing default values for missing fields. Reduces code duplication
+        across CLI, GUI, and batch processing modules.
+        
+        Args:
+            result: Result from transcriber.transcribe_with_metadata(), which may be
+                   a dict with full metadata or a string with just the transcribed text.
+        
+        Returns:
+            Tuple of (text, language, duration, avg_confidence, audio_metadata)
+        """
+        if isinstance(result, dict):
+            text = result.get('text', '')
+            language = result.get('language', 'Unknown')
+            duration = result.get('duration', 0)
+            avg_confidence = result.get('avg_logprob', None)
+            audio_metadata = result.get('audio_metadata', {})
+        else:
+            text = result
+            language = 'Unknown'
+            duration = 0
+            avg_confidence = None
+            audio_metadata = {}
+        
+        return text, language, duration, avg_confidence, audio_metadata
+    
+    @staticmethod
     def format_time(seconds):
         """Format time in seconds to human-readable format.
         

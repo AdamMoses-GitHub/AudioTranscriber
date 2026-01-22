@@ -252,18 +252,7 @@ class SingleFileTab:
             )
             
             # Extract results
-            if isinstance(result, dict):
-                text = result.get('text', '')
-                language = result.get('language', 'Unknown')
-                duration = result.get('duration', 0)
-                avg_confidence = result.get('avg_logprob', None)
-                audio_metadata = result.get('audio_metadata', {})
-            else:
-                text = result
-                language = 'Unknown'
-                duration = 0
-                avg_confidence = None
-                audio_metadata = {}
+            text, language, duration, avg_confidence, audio_metadata = FormatUtils.extract_transcription_results(result)
             
             processing_time = time.time() - start_time
             

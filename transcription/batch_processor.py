@@ -140,18 +140,7 @@ class BatchProcessor:
             result = self.transcriber.transcribe_with_metadata(audio_file, options.get('engine', 'auto_gpu'), options)
             
             # Extract results
-            if isinstance(result, dict):
-                text = result.get('text', '')
-                language = result.get('language', 'Unknown')
-                duration = result.get('duration', 0)
-                avg_confidence = result.get('avg_logprob', None)
-                audio_metadata = result.get('audio_metadata', {})
-            else:
-                text = result
-                language = 'Unknown'
-                duration = 0
-                avg_confidence = None
-                audio_metadata = {}
+            text, language, duration, avg_confidence, audio_metadata = FormatUtils.extract_transcription_results(result)
             
             # Format text if requested
             chars_per_line = options.get('chars_per_line', 80)
