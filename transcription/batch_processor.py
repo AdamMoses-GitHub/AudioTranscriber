@@ -165,6 +165,13 @@ class BatchProcessor:
                 file_size_mb = os.path.getsize(audio_file) / BYTES_PER_MB
                 audio_metadata['file_size_bytes'] = os.path.getsize(audio_file)
                 
+                # Get GPU info if available
+                gpu_available = False
+                gpu_name = None
+                if hasattr(self.model_manager, 'environment') and self.model_manager.environment.gpu_available:
+                    gpu_available = True
+                    gpu_name = self.model_manager.environment.get_gpu_info()['name']
+                
                 metadata_header = FormatUtils.build_transcript_metadata(
                     file_name=file_name,
                     audio_metadata=audio_metadata,
@@ -176,7 +183,9 @@ class BatchProcessor:
                     language=language,
                     avg_confidence=avg_confidence,
                     detected_date=detected_date,
-                    day_of_week=day_of_week
+                    day_of_week=day_of_week,
+                    gpu_available=gpu_available,
+                    gpu_name=gpu_name
                 )
                 f.write(metadata_header)
                 f.write(formatted_text)

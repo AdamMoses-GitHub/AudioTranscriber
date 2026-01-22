@@ -212,7 +212,8 @@ class FormatUtils:
                                    process_time: float, engine: str, model: str, 
                                    compute_type: str, language: str, 
                                    avg_confidence: float = None, detected_date = None, 
-                                   day_of_week: str = None) -> str:
+                                   day_of_week: str = None, gpu_available: bool = False,
+                                   gpu_name: str = None) -> str:
         """Build comprehensive metadata header for transcript files.
         
         Centralizes the common metadata formatting logic used across transcriber
@@ -230,6 +231,8 @@ class FormatUtils:
             avg_confidence: Average confidence score (optional).
             detected_date: Detected date from filename (optional, datetime object).
             day_of_week: Detected day of week (optional).
+            gpu_available: Whether GPU is available (optional).
+            gpu_name: Name of GPU if available (optional).
             
         Returns:
             Formatted metadata header string.
@@ -276,6 +279,13 @@ class FormatUtils:
         lines.append(f"Engine:            {engine}\n")
         lines.append(f"Model:             {model}\n")
         lines.append(f"Compute Precision: {compute_type}\n")
+        
+        # GPU/Device info
+        if gpu_available and gpu_name:
+            lines.append(f"GPU:               {gpu_name}\n")
+        else:
+            lines.append(f"Device:            CPU\n")
+        
         lines.append(f"Language:          {language}\n")
         
         # Confidence score

@@ -75,50 +75,36 @@ class AudioTranscriberCLI:
             text = FormatUtils.format_text_with_line_breaks(text, args.chars_per_line)
         
         # Detect date if requested
-        date_info = ""
+        detected_date = None
+        day_of_week = None
         if args.detect_date:
             detected_date, day_of_week = DateParser.detect_date_from_filename(
                 os.path.basename(args.input)
             )
-            if detected_date:
-                date_info = f"Recording Date: {detected_date.strftime('%Y-%m-%d')} ({day_of_week})\n"
         
-        # Build transcript
-        file_size = os.path.getsize(args.input) / (1024 * 1024)
-        final_text = f"Transcript of: {os.path.basename(args.input)}\n"
-        final_text += date_info
-        final_text += f"Transcribed: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        final_text += "\n--- TRANSCRIPTION METADATA ---\n"
-        final_text += f"File Size:         {file_size:.2f} MB\n"
-        
-        audio_info = AudioUtils.format_audio_info(audio_metadata)
-        if audio_info != "Unknown":
-            final_text += f"Audio Format:      {audio_info}\n"
-        
-        mp3_tags = AudioUtils.format_mp3_tags(audio_metadata)
-        if mp3_tags:
-            final_text += f"MP3 Tags:\n{mp3_tags}\n"
-        
-        if duration > 0:
-            final_text += f"Duration:          {FormatUtils.format_time(duration)}\n"
-        final_text += f"Processing Time:   {FormatUtils.format_time(processing_time)}\n"
-        if duration > 0 and processing_time > 0:
-            speed_ratio = duration / processing_time
-            final_text += f"Speed:             {speed_ratio:.1f}x real-time\n"
-        final_text += f"Engine:            {args.engine}\n"
-        final_text += f"Model:             {args.model}\n"
-        final_text += f"Compute Precision: {args.compute}\n"
+        # Build transcript with metadata
+        audio_metadata['file_size_bytes'] = os.path.getsize(args.input)
+        gpu_name = None
         if self.environment.gpu_available:
             gpu_name = self.environment.get_gpu_info()['name']
-            final_text += f"GPU:               {gpu_name}\n"
-        else:
-            final_text += f"Device:            CPU\n"
-        final_text += f"Language:          {language}\n"
-        if avg_confidence is not None:
-            confidence_pct = (1 + avg_confidence) * 100
-            final_text += f"Confidence:        {confidence_pct:.1f}%\n"
-        final_text += "=" * 60 + "\n\n"
-        final_text += text
+        
+        metadata_header = FormatUtils.build_transcript_metadata(
+            file_name=os.path.basename(args.input),
+            audio_metadata=audio_metadata,
+            duration=duration,
+            process_time=processing_time,
+            engine=args.engine,
+            model=args.model,
+            compute_type=args.compute,
+            language=language,
+            avg_confidence=avg_confidence,
+            detected_date=detected_date,
+            day_of_week=day_of_week,
+            gpu_available=self.environment.gpu_available,
+            gpu_name=gpu_name
+        )
+        
+        final_text = metadata_header + text
         
         # Determine output file
         if args.output:

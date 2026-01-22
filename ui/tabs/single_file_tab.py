@@ -265,49 +265,36 @@ class SingleFileTab:
                 text = FormatUtils.format_text_with_line_breaks(text, self.chars_per_line.get())
             
             # Detect date if requested
-            date_info = ""
+            detected_date = None
+            day_of_week = None
             if self.detect_date.get():
                 detected_date, day_of_week = DateParser.detect_date_from_filename(
                     os.path.basename(self.file_path)
                 )
-                if detected_date:
-                    date_info = f"Recording Date: {detected_date.strftime('%Y-%m-%d')} ({day_of_week})\n"
             
-            # Prepare final text
-            final_text = f"Transcript of: {os.path.basename(self.file_path)}\n"
-            final_text += date_info
-            final_text += f"Transcribed: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            final_text += "\n--- TRANSCRIPTION METADATA ---\n"
-            final_text += f"File Size:         {file_size:.2f} MB\n"
-            
-            audio_info = AudioUtils.format_audio_info(audio_metadata)
-            if audio_info != "Unknown":
-                final_text += f"Audio Format:      {audio_info}\n"
-            
-            mp3_tags = AudioUtils.format_mp3_tags(audio_metadata)
-            if mp3_tags:
-                final_text += f"MP3 Tags:\n{mp3_tags}\n"
-            
-            if duration > 0:
-                final_text += f"Duration:          {FormatUtils.format_time(duration)}\n"
-            final_text += f"Processing Time:   {FormatUtils.format_time(processing_time)}\n"
-            if duration > 0 and processing_time > 0:
-                speed_ratio = duration / processing_time
-                final_text += f"Speed:             {speed_ratio:.1f}x real-time\n"
-            final_text += f"Engine:            {self.app.engine.get()}\n"
-            final_text += f"Model:             {self.app.model_size.get()}\n"
-            final_text += f"Compute Precision: {self.app.compute_type.get()}\n"
+            # Build transcript with metadata
+            audio_metadata['file_size_bytes'] = os.path.getsize(self.file_path)
+            gpu_name = None
             if self.app.environment.gpu_available:
                 gpu_name = self.app.environment.get_gpu_info()['name']
-                final_text += f"GPU:               {gpu_name}\n"
-            else:
-                final_text += f"Device:            CPU\n"
-            final_text += f"Language:          {language}\n"
-            if avg_confidence is not None:
-                confidence_pct = (1 + avg_confidence) * 100
-                final_text += f"Confidence:        {confidence_pct:.1f}%\n"
-            final_text += "=" * 60 + "\n\n"
-            final_text += text
+            
+            metadata_header = FormatUtils.build_transcript_metadata(
+                file_name=os.path.basename(self.file_path),
+                audio_metadata=audio_metadata,
+                duration=duration,
+                process_time=processing_time,
+                engine=self.app.engine.get(),
+                model=self.app.model_size.get(),
+                compute_type=self.app.compute_type.get(),
+                language=language,
+                avg_confidence=avg_confidence,
+                detected_date=detected_date,
+                day_of_week=day_of_week,
+                gpu_available=self.app.environment.gpu_available,
+                gpu_name=gpu_name
+            )
+            
+            final_text = metadata_header + text
             
             # Store transcript and display in text area
             self.current_transcript = final_text
