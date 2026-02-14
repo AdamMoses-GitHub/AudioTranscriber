@@ -40,6 +40,10 @@ class SingleFileTab:
         self.timestamp_format = tk.StringVar(value=DEFAULT_TIMESTAMP_FORMAT)
         self.timestamp_interval = tk.IntVar(value=DEFAULT_TIMESTAMP_INTERVAL)
         
+        # Diarization variables
+        self.diarization_enabled = tk.BooleanVar(value=False)
+        self.num_speakers = tk.IntVar(value=0)  # 0 = auto-detect
+        
         # Create UI
         self._create_ui()
         
@@ -146,6 +150,66 @@ class SingleFileTab:
         if hasattr(self, "format_combo") and hasattr(self, "interval_combo"):
             self._on_timestamp_toggle()
         
+        # Speaker Diarization section (optional feature)
+        if self.app.environment.pyannote_available:
+            diarization_frame = ttk.LabelFrame(options_frame, text="Speaker Diarization (Optional)", padding="10")
+            diarization_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+            
+            diar_controls = ttk.Frame(diarization_frame)
+            diar_controls.grid(row=0, column=0, sticky="w")
+            
+            # Enable checkbox
+            self.diarization_checkbox = ttk.Checkbutton(
+                diar_controls,
+                text="Identify speakers",
+                variable=self.diarization_enabled,
+                command=self._on_diarization_toggle
+            )
+            self.diarization_checkbox.grid(row=0, column=0, sticky="w")
+            
+            # Number of speakers
+            ttk.Label(diar_controls, text="Number of speakers:").grid(row=0, column=1, sticky="w", padx=(20, 5))
+            self.speakers_spinbox = ttk.Spinbox(
+                diar_controls,
+                from_=0,
+                to=10,
+                width=5,
+                textvariable=self.num_speakers,
+                command=self.app.save_config
+            )
+            self.speakers_spinbox.grid(row=0, column=2, sticky="w")
+            self.num_speakers.trace_add('write', lambda *args: self.app.save_config())
+            
+            ttk.Label(diar_controls, text="(0 = auto-detect)", foreground="gray", font=("Arial", 8)).grid(
+                row=0, column=3, sticky="w", padx=(5, 0))
+            
+            ttk.Button(diar_controls, text="?", width=3, command=self.show_diarization_help).grid(
+                row=0, column=4, padx=(5, 0))
+            
+            # HF Token warning if not set
+            if not self.app.hf_token.get():
+                warning_frame = ttk.Frame(diarization_frame)
+                warning_frame.grid(row=1, column=0, sticky="w", pady=(10, 0))
+                ttk.Label(
+                    warning_frame,
+                    text="⚠️ Hugging Face token required. Configure in Model Configuration tab.",
+                    foreground="red",
+                    font=("Arial", 8)
+                ).grid(row=0, column=0, sticky="w")
+            
+            # Initially disable diarization controls
+            self._on_diarization_toggle()
+        else:
+            # Show message if pyannote not available
+            unavail_frame = ttk.LabelFrame(options_frame, text="Speaker Diarization (Not Available)", padding="10")
+            unavail_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+            ttk.Label(
+                unavail_frame,
+                text="⚠️ pyannote.audio not installed. Run: pip install pyannote.audio torchaudio",
+                foreground="gray",
+                font=("Arial", 9)
+            ).grid(row=0, column=0, sticky="w")
+        
         # Control buttons
         control_frame = ttk.Frame(self.frame)
         control_frame.grid(row=3, column=0, sticky="ew", pady=(0, 10))
@@ -236,8 +300,6 @@ class SingleFileTab:
             
             start_time = time.time()
             
-            self.update_status("Transcribing audio...")
-            
             # Build options dict with timestamp settings
             options = {
                 'timestamps_enabled': self.timestamps_enabled.get(),
@@ -245,11 +307,50 @@ class SingleFileTab:
                 'timestamp_interval': self.timestamp_interval.get()
             }
             
-            result = self.app.transcriber.transcribe_with_metadata(
-                self.file_path,
-                self.app.engine.get(),
-                options=options
-            )
+            # Check if diarization is enabled
+            if self.diarization_enabled.get() and self.app.environment.pyannote_available:
+                # Validate HF token
+                hf_token = self.app.hf_token.get()
+                if not hf_token or not hf_token.strip():
+                    self.update_status("Error: Hugging Face token required for diarization")
+                    messagebox.showerror(
+                        "Token Required",
+                        "Please configure your Hugging Face token in the Model Configuration tab.",
+                        parent=self.frame
+                    )
+                    return
+                
+                self.update_status("Loading diarization model...")
+                # Load diarization pipeline
+                success = self.app.diarizer.load_pipeline(hf_token, whisper_loaded=True)
+                if not success:
+                    self.update_status("Error: Failed to load diarization model")
+                    messagebox.showerror(
+                        "Diarization Error",
+                        "Failed to load speaker diarization model. Check your Hugging Face token and internet connection.",
+                        parent=self.frame
+                    )
+                    return
+                
+                self.update_status("Transcribing with speaker diarization...")
+                try:
+                    result = self.app.transcriber.transcribe_with_diarization(
+                        self.file_path,
+                        self.app.engine.get(),
+                        self.app.diarizer,
+                        self.num_speakers.get() if self.num_speakers.get() > 0 else None,
+                        options=options
+                    )
+                finally:
+                    # Cleanup diarizer
+                    self.app.diarizer.cleanup()
+            else:
+                self.update_status("Transcribing audio...")
+                result = self.app.transcriber.transcribe_with_metadata(
+                    self.file_path,
+                    self.app.engine.get(),
+                    options=options
+                )
             
             # Extract results
             text, language, duration, avg_confidence, audio_metadata = FormatUtils.extract_transcription_results(result)
@@ -356,6 +457,13 @@ class SingleFileTab:
         self.interval_combo.config(state=state)
         self.app.save_config()
     
+    def _on_diarization_toggle(self):
+        """Handle diarization checkbox toggle."""
+        if hasattr(self, 'speakers_spinbox'):
+            state = "normal" if self.diarization_enabled.get() else "disabled"
+            self.speakers_spinbox.config(state=state)
+            self.app.save_config()
+    
     def show_date_detection_help(self):
         """Show help dialog for date detection feature."""
         help_text = (
@@ -411,6 +519,30 @@ class SingleFileTab:
         )
         messagebox.showinfo("Timestamp Help", help_text, parent=self.frame)
     
+    def show_diarization_help(self):
+        """Show help dialog for speaker diarization feature."""
+        help_text = (
+            "Speaker Diarization\n\n"
+            "Automatically identifies and labels different speakers in the audio.\n\n"
+            "How it works:\n"
+            "  • Analyzes voice characteristics to distinguish speakers\n"
+            "  • Labels each segment with SPEAKER_00, SPEAKER_01, etc.\n"
+            "  • Works best with 2-5 distinct speakers\n\n"
+            "Number of Speakers:\n"
+            "  • 0 (auto-detect): Let the AI determine speaker count\n"
+            "  • 1-10: Specify expected number of speakers\n\n"
+            "Requirements:\n"
+            "  • Hugging Face token (free account at huggingface.co)\n"
+            "  • pyannote.audio library installed\n"
+            "  • Increases processing time by 0.5-2x audio duration\n\n"
+            "Best Results:\n"
+            "  • Clear audio with minimal background noise\n"
+            "  • Speakers with distinct voice characteristics\n"
+            "  • Minimal overlapping speech\n\n"
+            "Note: Configure your Hugging Face token in the Model Configuration tab first."
+        )
+        messagebox.showinfo("Speaker Diarization Help", help_text, parent=self.frame)
+    
     def get_config(self):
         """Get tab configuration."""
         return {
@@ -419,7 +551,9 @@ class SingleFileTab:
             'chars_per_line': self.chars_per_line.get(),
             'timestamps_enabled': self.timestamps_enabled.get(),
             'timestamp_format': self.timestamp_format.get(),
-            'timestamp_interval': self.timestamp_interval.get()
+            'timestamp_interval': self.timestamp_interval.get(),
+            'diarization_enabled': self.diarization_enabled.get(),
+            'diarization_num_speakers': self.num_speakers.get()
         }
     
     def set_config(self, config):
@@ -445,5 +579,15 @@ class SingleFileTab:
         if 'timestamp_interval' in config:
             self.timestamp_interval.set(config['timestamp_interval'])
         
+        if 'diarization_enabled' in config:
+            self.diarization_enabled.set(config['diarization_enabled'])
+        
+        if 'num_speakers' in config:
+            self.num_speakers.set(config['num_speakers'])
+        
         # Update timestamp control states
         self._on_timestamp_toggle()
+        
+        # Update diarization control states if available
+        if hasattr(self, '_on_diarization_toggle'):
+            self._on_diarization_toggle()

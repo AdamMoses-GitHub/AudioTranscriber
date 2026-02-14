@@ -135,9 +135,28 @@ class BatchProcessor:
             # Get file size
             file_size = os.path.getsize(audio_file) / BYTES_PER_MB  # MB
             
-            # Transcribe
+            # Transcribe (with or without diarization)
             FileUtils.ensure_directory(output_file)
-            result = self.transcriber.transcribe_with_metadata(audio_file, options.get('engine', 'auto_gpu'), options)
+            
+            # Check if diarization is enabled
+            if options.get('diarization_enabled', False) and options.get('diarizer'):
+                # Transcribe with speaker diarization
+                diarizer = options['diarizer']
+                num_speakers = options.get('num_speakers')
+                result = self.transcriber.transcribe_with_diarization(
+                    audio_file, 
+                    options.get('engine', 'auto_gpu'),
+                    diarizer,
+                    num_speakers,
+                    options
+                )
+            else:
+                # Regular transcription without diarization
+                result = self.transcriber.transcribe_with_metadata(
+                    audio_file, 
+                    options.get('engine', 'auto_gpu'), 
+                    options
+                )
             
             # Extract results
             text, language, duration, avg_confidence, audio_metadata = FormatUtils.extract_transcription_results(result)

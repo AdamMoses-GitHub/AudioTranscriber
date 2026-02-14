@@ -35,6 +35,10 @@ class BatchTab:
         self.timestamp_format = tk.StringVar(value=DEFAULT_TIMESTAMP_FORMAT)
         self.timestamp_interval = tk.IntVar(value=DEFAULT_TIMESTAMP_INTERVAL)
         
+        # Diarization variables
+        self.diarization_enabled = tk.BooleanVar(value=False)
+        self.num_speakers = tk.IntVar(value=0)  # 0 = auto-detect
+        
         self._create_ui()
     
     def _create_ui(self):
@@ -181,6 +185,66 @@ class BatchTab:
         # Initially disable timestamp controls
         self._on_timestamp_toggle()
         
+        # Speaker Diarization section (optional feature)
+        if self.app.environment.pyannote_available:
+            diarization_frame = ttk.LabelFrame(opts_grid, text="Speaker Diarization (Optional)", padding="5")
+            diarization_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+            
+            diar_controls = ttk.Frame(diarization_frame)
+            diar_controls.grid(row=0, column=0, sticky="w")
+            
+            # Enable checkbox
+            self.diarization_checkbox = ttk.Checkbutton(
+                diar_controls,
+                text="Identify speakers",
+                variable=self.diarization_enabled,
+                command=self._on_diarization_toggle
+            )
+            self.diarization_checkbox.grid(row=0, column=0, sticky="w")
+            
+            # Number of speakers
+            ttk.Label(diar_controls, text="Number of speakers:").grid(row=0, column=1, sticky="w", padx=(20, 5))
+            self.speakers_spinbox = ttk.Spinbox(
+                diar_controls,
+                from_=0,
+                to=10,
+                width=5,
+                textvariable=self.num_speakers,
+                command=self.app.save_config
+            )
+            self.speakers_spinbox.grid(row=0, column=2, sticky="w")
+            self.num_speakers.trace_add('write', lambda *args: self.app.save_config())
+            
+            ttk.Label(diar_controls, text="(0 = auto-detect)", foreground="gray", font=("Arial", 8)).grid(
+                row=0, column=3, sticky="w", padx=(5, 0))
+            
+            ttk.Button(diar_controls, text="?", width=3, command=self.show_diarization_help).grid(
+                row=0, column=4, padx=(5, 0))
+            
+            # HF Token warning if not set
+            if not self.app.hf_token.get():
+                warning_frame = ttk.Frame(diarization_frame)
+                warning_frame.grid(row=1, column=0, sticky="w", pady=(5, 0))
+                ttk.Label(
+                    warning_frame,
+                    text="\u26a0\ufe0f Hugging Face token required. Configure in Model Configuration tab.",
+                    foreground="red",
+                    font=("Arial", 8)
+                ).grid(row=0, column=0, sticky="w")
+            
+            # Initially disable diarization controls
+            self._on_diarization_toggle()
+        else:
+            # Show message if pyannote not available
+            unavail_frame = ttk.LabelFrame(opts_grid, text="Speaker Diarization (Not Available)", padding="5")
+            unavail_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+            ttk.Label(
+                unavail_frame,
+                text="\u26a0\ufe0f pyannote.audio not installed. Run: pip install pyannote.audio torchaudio",
+                foreground="gray",
+                font=("Arial", 8)
+            ).grid(row=0, column=0, sticky="w")
+        
         # Control section
         control_frame = ttk.LabelFrame(self.frame, text="Batch Control", padding="10")
         control_frame.grid(row=3, column=0, sticky="ew", pady=(0, 10))
@@ -296,6 +360,7 @@ class BatchTab:
     
     def _batch_worker(self):
         """Batch processing worker thread."""
+        diarizer_loaded = False
         try:
             # Load model
             self.app.model_manager.load_model(
@@ -317,8 +382,38 @@ class BatchTab:
                 'compute_type': self.app.compute_type.get(),
                 'timestamps_enabled': self.timestamps_enabled.get(),
                 'timestamp_format': self.timestamp_format.get(),
-                'timestamp_interval': self.timestamp_interval.get()
+                'timestamp_interval': self.timestamp_interval.get(),
+                'diarization_enabled': False  # Default
             }
+            
+            # Check if diarization is enabled
+            if self.diarization_enabled.get() and self.app.environment.pyannote_available:
+                # Validate HF token
+                hf_token = self.app.hf_token.get()
+                if not hf_token or not hf_token.strip():
+                    self.log("❌ Error: Hugging Face token required for diarization")
+                    self.app.root.after(0, lambda: messagebox.showerror(
+                        "Token Required",
+                        "Please configure your Hugging Face token in the Model Configuration tab."))
+                    return
+                
+                self.log("📍 Loading diarization model...")
+                # Load diarization pipeline (will be reused for all files)
+                success = self.app.diarizer.load_pipeline(hf_token, whisper_loaded=True)
+                if not success:
+                    self.log("❌ Failed to load diarization model")
+                    self.app.root.after(0, lambda: messagebox.showerror(
+                        "Diarization Error",
+                        "Failed to load speaker diarization model. Check your token and connection."))
+                    return
+                
+                diarizer_loaded = True
+                self.log("✅ Diarization model loaded successfully")
+                
+                # Add diarization options
+                options['diarization_enabled'] = True
+                options['diarizer'] = self.app.diarizer
+                options['num_speakers'] = self.num_speakers.get() if self.num_speakers.get() > 0 else None
             
             # Process batch
             results = self.app.batch_processor.process_batch(
@@ -346,7 +441,10 @@ class BatchTab:
             self.log(f"\n❌ Error: {e}")
             self.app.root.after(0, lambda e=e: messagebox.showerror("Error", f"Batch failed: {e}"))
         finally:
+            # Cleanup models
             self.app.model_manager.cleanup_model()
+            if diarizer_loaded:
+                self.app.diarizer.cleanup()
             self.app.root.after(0, self._reset_ui)
             self.app.root.after(0, self.app.unfreeze_all_tabs)
     
@@ -532,6 +630,37 @@ class BatchTab:
         self.interval_combo.config(state=state)
         self.app.save_config()
     
+    def _on_diarization_toggle(self):
+        """Handle diarization checkbox toggle."""
+        if hasattr(self, 'speakers_spinbox'):
+            state = "normal" if self.diarization_enabled.get() else "disabled"
+            self.speakers_spinbox.config(state=state)
+            self.app.save_config()
+    
+    def show_diarization_help(self):
+        """Show help dialog for speaker diarization feature."""
+        help_text = (
+            "Speaker Diarization (Batch Processing)\n\n"
+            "Automatically identifies and labels different speakers in all audio files.\n\n"
+            "How it works:\n"
+            "  • Analyzes voice characteristics to distinguish speakers\n"
+            "  • Labels each segment with SPEAKER_00, SPEAKER_01, etc.\n"
+            "  • Works best with 2-5 distinct speakers\n\n"
+            "Number of Speakers:\n"
+            "  • 0 (auto-detect): Let the AI determine speaker count for each file\n"
+            "  • 1-10: Apply same speaker count to all files in batch\n\n"
+            "Requirements:\n"
+            "  • Hugging Face token configured in Model Configuration tab\n"
+            "  • pyannote.audio library installed\n"
+            "  • Increases processing time significantly (0.5-2x per file)\n\n"
+            "Performance Impact:\n"
+            "  • Diarization model loaded once, reused for all files\n"
+            "  • Processing runs on GPU if available\n"
+            "  • May require additional VRAM (~ 2GB)\n\n"
+            "Note: All files in batch will use the same diarization settings."
+        )
+        messagebox.showinfo("Speaker Diarization Help", help_text, parent=self.frame)
+    
     def get_config(self):
         """Get tab configuration."""
         return {
@@ -545,7 +674,9 @@ class BatchTab:
             'recursive': self.recursive.get(),
             'timestamps_enabled': self.timestamps_enabled.get(),
             'timestamp_format': self.timestamp_format.get(),
-            'timestamp_interval': self.timestamp_interval.get()
+            'timestamp_interval': self.timestamp_interval.get(),
+            'diarization_enabled': self.diarization_enabled.get(),
+            'diarization_num_speakers': self.num_speakers.get()
         }
     
     def set_config(self, config):
@@ -579,6 +710,17 @@ class BatchTab:
         if 'timestamp_interval' in config:
             self.timestamp_interval.set(config['timestamp_interval'])
         
+        if 'diarization_enabled' in config:
+            self.diarization_enabled.set(config['diarization_enabled'])
+        
+        if 'num_speakers' in config:
+            self.num_speakers.set(config['num_speakers'])
+        
         # Update timestamp control states
         self._on_timestamp_toggle()
+        
+        # Update diarization control states if available
+        if hasattr(self, '_on_diarization_toggle'):
+            self._on_diarization_toggle()
+        
         self.check_ready()

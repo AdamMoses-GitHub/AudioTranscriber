@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import ttk
 from config import Environment, ConfigManager
 from models import ModelManager
-from transcription import Transcriber, BatchProcessor
+from transcription import Transcriber, BatchProcessor, Diarizer
 from ui.tabs import SingleFileTab, BatchTab, ModelConfigTab, AboutTab
 
 
@@ -27,11 +27,17 @@ class AudioTranscriberApp:
         self.model_manager = ModelManager(self.environment)
         self.transcriber = Transcriber(self.model_manager, self.environment)
         self.batch_processor = BatchProcessor(self.transcriber, self.model_manager)
+        self.diarizer = Diarizer(self.environment)
         
         # Shared configuration variables
         self.engine = tk.StringVar(value="auto_gpu")
         self.model_size = tk.StringVar(value="base")
         self.compute_type = tk.StringVar(value="float16" if self.environment.gpu_available else "int8")
+        
+        # Diarization variables
+        self.hf_token = tk.StringVar(value="")
+        self.diarization_enabled = tk.BooleanVar(value=False)
+        self.num_speakers = tk.IntVar(value=0)  # 0 = auto-detect
         
         # Create UI
         self._create_ui()
@@ -94,6 +100,9 @@ class AudioTranscriberApp:
                 'model': self.model_size.get(),
                 'compute': self.compute_type.get(),
                 
+                # Diarization settings
+                'hf_token': self.hf_token.get(),
+                
                 # Single file tab
                 **self.single_file_tab.get_config(),
                 
@@ -119,12 +128,18 @@ class AudioTranscriberApp:
                 if 'compute' in config:
                     self.compute_type.set(config['compute'])
                 
+                # Diarization settings
+                if 'hf_token' in config:
+                    self.hf_token.set(config['hf_token'])
+                
                 # Single file tab
                 single_config = {
                     'file_path': config.get('file_path'),
                     'output_path': config.get('output_path'),
                     'detect_date': config.get('detect_date', True),
-                    'chars_per_line': config.get('chars_per_line', 80)
+                    'chars_per_line': config.get('chars_per_line', 80),
+                    'diarization_enabled': config.get('diarization_enabled', False),
+                    'num_speakers': config.get('diarization_num_speakers', 0)
                 }
                 self.single_file_tab.set_config(single_config)
                 
@@ -137,7 +152,9 @@ class AudioTranscriberApp:
                     'skip_existing': config.get('batch_skip_existing', True),
                     'create_summary': config.get('batch_create_summary', True),
                     'preserve_structure': config.get('batch_preserve_structure', False),
-                    'recursive': config.get('batch_recursive', False)
+                    'recursive': config.get('batch_recursive', False),
+                    'diarization_enabled': config.get('batch_diarization_enabled', False),
+                    'num_speakers': config.get('batch_diarization_num_speakers', 0)
                 }
                 self.batch_tab.set_config(batch_config)
         except Exception:

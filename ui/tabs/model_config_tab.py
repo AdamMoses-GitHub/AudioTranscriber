@@ -72,6 +72,7 @@ class ModelConfigTab:
         self._create_engine_tab(config_notebook)
         self._create_model_tab(config_notebook)
         self._create_compute_tab(config_notebook)
+        self._create_diarization_tab(config_notebook)
         
         # Apply button
         apply_frame = ttk.Frame(self.frame)
@@ -218,6 +219,111 @@ class ModelConfigTab:
             if not available:
                 ttk.Label(option_frame, text="    ⚠️ GPU required",
                          font=("Arial", 8), foreground="red").grid(row=2, column=0, sticky="w", padx=(20, 0))
+    
+    def _create_diarization_tab(self, parent):
+        """Create speaker diarization configuration sub-tab."""
+        frame = ttk.Frame(parent, padding="15")
+        parent.add(frame, text="Speaker Diarization")
+        
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(2, weight=1)
+        
+        # Header
+        ttk.Label(frame,
+                 text="Configure speaker diarization using pyannote.audio for identifying different speakers in audio.",
+                 font=("Arial", 9), foreground="gray", wraplength=700).grid(row=0, column=0, sticky="w", pady=(0, 15))
+        
+        # Status
+        status_frame = ttk.LabelFrame(frame, text="Diarization Status", padding="15")
+        status_frame.grid(row=1, column=0, sticky="ew", pady=(0, 15))
+        
+        pyannote_status = "✅ Installed" if self.app.environment.pyannote_available else "❌ Not Installed"
+        pyannote_color = "green" if self.app.environment.pyannote_available else "red"
+        
+        ttk.Label(status_frame, text="pyannote.audio:", font=("Arial", 10)).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ttk.Label(status_frame, text=pyannote_status, font=("Arial", 10, "bold"),
+                 foreground=pyannote_color).grid(row=0, column=1, sticky="w")
+        
+        if not self.app.environment.pyannote_available:
+            ttk.Label(status_frame, 
+                     text="To install: pip install pyannote.audio torchaudio",
+                     font=("Arial", 8), foreground="gray").grid(row=1, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        
+        # HF Token Configuration
+        token_frame = ttk.LabelFrame(frame, text="Hugging Face Authentication", padding="15")
+        token_frame.grid(row=2, column=0, sticky="ew", pady=(0, 15))
+        token_frame.columnconfigure(0, weight=1)
+        
+        ttk.Label(token_frame,
+                 text="A free Hugging Face account and token are required to use speaker diarization models.",
+                 font=("Arial", 9), foreground="gray", wraplength=700).grid(row=0, column=0, sticky="w", pady=(0, 10))
+        
+        # Token input
+        token_input_frame = ttk.Frame(token_frame)
+        token_input_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        token_input_frame.columnconfigure(1, weight=1)
+        
+        ttk.Label(token_input_frame, text="HF Token:", font=("Arial", 10)).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        self.token_entry = ttk.Entry(token_input_frame, textvariable=self.app.hf_token, show="*", width=50)
+        self.token_entry.grid(row=0, column=1, sticky="ew")
+        
+        # Token buttons
+        button_frame = ttk.Frame(token_frame)
+        button_frame.grid(row=2, column=0, sticky="w")
+        
+        ttk.Button(button_frame, text="Test Token", command=self.test_hf_token).grid(row=0, column=0, padx=(0, 5))
+        ttk.Button(button_frame, text="Get Token", command=self.open_hf_token_url).grid(row=0, column=1, padx=(0, 5))
+        ttk.Button(button_frame, text="Clear", command=self.clear_hf_token).grid(row=0, column=2)
+        
+        # Instructions
+        info_frame = ttk.Frame(token_frame)
+        info_frame.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        
+        instructions = (
+            "To get your token:\n"
+            "1. Create a free account at huggingface.co\n"
+            "2. Go to Settings → Access Tokens\n"
+            "3. Create a new token with 'read' permissions\n"
+            "4. Accept the model license at: huggingface.co/pyannote/speaker-diarization-3.1\n"
+            "5. Paste token above and click 'Test Token'"
+        )
+        ttk.Label(info_frame, text=instructions, font=("Arial", 8),
+                 foreground="gray", justify=tk.LEFT).grid(row=0, column=0, sticky="w")
+    
+    def test_hf_token(self):
+        """Test the Hugging Face token."""
+        if not self.app.environment.pyannote_available:
+            messagebox.showerror(
+                "pyannote Not Available",
+                "pyannote.audio is not installed.\n\nInstall with: pip install pyannote.audio torchaudio"
+            )
+            return
+        
+        token = self.app.hf_token.get()
+        if not token or not token.strip():
+            messagebox.showwarning("No Token", "Please enter your Hugging Face token first.")
+            return
+        
+        # Test token validity
+        is_valid, message = self.app.diarizer.validate_token(token)
+        
+        if is_valid:
+            messagebox.showinfo("Token Valid", "✅ Your Hugging Face token is valid and has access to the diarization model!")
+            self.app.save_config()
+        else:
+            messagebox.showerror("Token Invalid", f"❌ Token validation failed:\n\n{message}")
+    
+    def open_hf_token_url(self):
+        """Open Hugging Face token page in browser."""
+        import webbrowser
+        webbrowser.open("https://huggingface.co/settings/tokens")
+    
+    def clear_hf_token(self):
+        """Clear the HF token."""
+        if messagebox.askyesno("Clear Token", "Are you sure you want to clear the Hugging Face token?"):
+            self.app.hf_token.set("")
+            self.app.save_config()
+            messagebox.showinfo("Token Cleared", "Hugging Face token has been cleared.")
     
     def update_gpu_status(self):
         """Update GPU status."""

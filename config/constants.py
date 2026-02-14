@@ -86,3 +86,11 @@ SECONDS_PER_HOUR = 3600
 BYTES_PER_KB = 1024
 BYTES_PER_MB = 1024 * 1024
 BYTES_PER_GB = 1024 * 1024 * 1024
+
+# Speaker diarization settings
+DIARIZATION_MODELS = ["pyannote/speaker-diarization-3.1"]
+DEFAULT_DIARIZATION_MODEL = "pyannote/speaker-diarization-3.1"
+MIN_SPEAKERS = 1
+MAX_SPEAKERS = 10
+DEFAULT_NUM_SPEAKERS = None  # None = auto-detect
+SPEAKER_LABEL_FORMAT = "SPEAKER_{:02d}"  # Formats as SPEAKER_00, SPEAKER_01, etc.

@@ -33,6 +33,15 @@ try:
 except ImportError:
     FASTER_WHISPER_AVAILABLE = False
 
+try:
+    import warnings
+    # Suppress torchcodec warnings from pyannote.audio (uses av library as fallback)
+    warnings.filterwarnings('ignore', category=UserWarning, module='pyannote.audio.core.io')
+    from pyannote.audio import Pipeline
+    PYANNOTE_AVAILABLE = True
+except ImportError:
+    PYANNOTE_AVAILABLE = False
+
 
 class Environment:
     """Manages environment detection and library availability."""
@@ -44,6 +53,7 @@ class Environment:
         self.mutagen_available = MUTAGEN_AVAILABLE
         self.whisper_available = WHISPER_AVAILABLE
         self.faster_whisper_available = FASTER_WHISPER_AVAILABLE
+        self.pyannote_available = PYANNOTE_AVAILABLE
         
         # GPU detection
         self.gpu_available = torch.cuda.is_available()
@@ -76,7 +86,8 @@ class Environment:
             'wave': self.wave_available,
             'mutagen': self.mutagen_available,
             'whisper': self.whisper_available,
-            'faster_whisper': self.faster_whisper_available
+            'faster_whisper': self.faster_whisper_available,
+            'pyannote': self.pyannote_available
         }
     
     def resolve_engine(self, engine: str) -> str:
@@ -116,3 +127,32 @@ class Environment:
         elif engine == 'faster_whisper':
             return self.faster_whisper_available
         return False
+    
+    def get_diarization_device(self, whisper_loaded: bool = False) -> str:
+        """Determine device for speaker diarization.
+        
+        Args:
+            whisper_loaded: Whether Whisper model is currently loaded in GPU memory.
+            
+        Returns:
+            Device string ('cuda' or 'cpu').
+        """
+        if not self.gpu_available:
+            return "cpu"
+        
+        # Check available VRAM if Whisper is already loaded
+        if whisper_loaded:
+            try:
+                memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                used_memory = torch.cuda.memory_allocated(0) / (1024**3)
+                available = memory_gb - used_memory
+                
+                # pyannote needs ~2GB VRAM
+                if available > 2.5:
+                    return "cuda"
+                else:
+                    return "cpu"  # Not enough VRAM, fallback to CPU
+            except Exception:
+                return "cpu"  # Error checking VRAM, play it safe
+        
+        return "cuda"  # GPU available and nothing loaded yet
