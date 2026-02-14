@@ -1,0 +1,23 @@
+# Audio Transcriber - CPU-Only Requirements
+# Install with: pip install -r requirements-cpu.txt
+# No GPU required - runs on any system (slower transcription)
+
+# PyTorch CPU-only (no CUDA support)
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.1.0
+
+# Whisper transcription engines
+openai-whisper>=20231117  # OpenAI's Whisper speech recognition model
+faster-whisper>=0.9.0     # Optimized Whisper implementation (faster on CPU)
+
+# Speaker diarization (CPU mode)
+pyannote.audio>=3.1.0     # Speaker diarization toolkit
+
+# Audio processing libraries
+av>=11.0.0                # Audio/video processing (FFmpeg wrapper)
+pydub>=0.25.1             # Audio file manipulation and format conversion
+mutagen>=1.47.0           # Audio metadata (ID3 tags) reading
+
+# Note: CPU-only installation automatically selected when no --index-url specified
+# Note: Transcription will be slower than GPU but works on any system

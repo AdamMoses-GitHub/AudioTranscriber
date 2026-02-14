@@ -1,0 +1,24 @@
+# Audio Transcriber - GPU Requirements (CUDA 12.4+)
+# Install with: pip install -r requirements-gpu.txt
+# Requires: NVIDIA GPU with CUDA support
+
+# PyTorch with CUDA 12.4 support (GPU acceleration)
+--index-url https://download.pytorch.org/whl/cu124
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.1.0
+
+# Whisper transcription engines
+openai-whisper>=20231117  # OpenAI's Whisper speech recognition model
+faster-whisper>=0.9.0     # Optimized Whisper implementation (4x faster on GPU)
+
+# Speaker diarization (GPU accelerated)
+pyannote.audio>=3.1.0     # Speaker diarization toolkit
+
+# Audio processing libraries
+av>=11.0.0                # Audio/video processing (FFmpeg wrapper)
+pydub>=0.25.1             # Audio file manipulation and format conversion
+mutagen>=1.47.0           # Audio metadata (ID3 tags) reading
+
+# Note: Verify GPU support after installation with:
+#   python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')"
