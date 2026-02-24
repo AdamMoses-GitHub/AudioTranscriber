@@ -220,9 +220,9 @@ class Transcriber:
         
         # Step 2: Transcribe audio with timestamps (reuse existing code!)
         logger.info("Step 2/3: Running speech-to-text transcription...")
-        # Force timestamps to be captured in segments (we'll format later)
+        # Get raw transcription data - we'll format timestamps with speakers in step 3
         transcribe_options = options.copy() if options else {}
-        transcribe_options['timestamps_enabled'] = False  # We'll handle formatting with speakers
+        transcribe_options['timestamps_enabled'] = False  # Format timestamps with speakers in merge step
         
         result = self.transcribe_with_metadata(audio_file, engine, transcribe_options)
         
@@ -230,8 +230,8 @@ class Transcriber:
         logger.info("Step 3/3: Merging speaker labels with transcript...")
         segments = self._extract_segments_from_transcription(audio_file, engine)
         
-        # Merge speaker labels with transcript segments
-        labeled_text = self._merge_speakers_with_transcript(speaker_timeline, segments)
+        # Merge speaker labels with transcript segments (pass options for timestamp formatting)
+        labeled_text = self._merge_speakers_with_transcript(speaker_timeline, segments, options)
         
         # Update result with speaker-labeled text
         result['text'] = labeled_text
@@ -283,7 +283,7 @@ class Transcriber:
         return segment_list
     
     def _merge_speakers_with_transcript(self, speaker_timeline: List[Tuple[float, float, str]], 
-                                        segments: List[Dict]) -> str:
+                                        segments: List[Dict], options: Optional[Dict] = None) -> str:
         """Merge speaker labels with transcript segments.
         
         Matches transcript segments to speaker timeline by timestamp overlap.
@@ -291,17 +291,26 @@ class Transcriber:
         Args:
             speaker_timeline: List of (start, end, speaker_label) tuples.
             segments: List of dicts with 'start', 'end', 'text' keys.
+            options: Optional dict with timestamp settings (timestamps_enabled, timestamp_format, timestamp_interval).
             
         Returns:
             Formatted text with speaker labels (e.g., "SPEAKER_00: text\nSPEAKER_01: text").
+            If timestamps enabled, includes timestamps at specified intervals.
         """
         if not segments:
             return ""
+        
+        # Check if timestamps should be included
+        include_timestamps = options and options.get('timestamps_enabled', False)
+        timestamp_format = options.get('timestamp_format', 'HH:MM:SS') if options else 'HH:MM:SS'
+        timestamp_interval = options.get('timestamp_interval', 30) if options else 30
         
         # Build output with speaker labels
         output_lines = []
         current_speaker = None
         current_text = []
+        current_start_time = None
+        last_timestamp_time = 0
         
         for segment in segments:
             segment_start = segment['start']
@@ -318,16 +327,39 @@ class Transcriber:
             if speaker != current_speaker:
                 if current_text:
                     # Write previous speaker's text
-                    output_lines.append(f"{current_speaker}: {' '.join(current_text)}")
+                    text_line = ' '.join(current_text)
+                    if include_timestamps and current_start_time is not None:
+                        timestamp_str = FormatUtils.format_timestamp(current_start_time, timestamp_format)
+                        output_lines.append(f"[{timestamp_str}] {current_speaker}: {text_line}")
+                    else:
+                        output_lines.append(f"{current_speaker}: {text_line}")
                     current_text = []
                 current_speaker = speaker
+                current_start_time = segment_start
+                last_timestamp_time = segment_start
+            
+            # Check if we need to insert an interval timestamp
+            elif include_timestamps and (segment_start - last_timestamp_time) >= timestamp_interval:
+                # Flush current text with timestamp
+                if current_text:
+                    text_line = ' '.join(current_text)
+                    timestamp_str = FormatUtils.format_timestamp(current_start_time, timestamp_format)
+                    output_lines.append(f"[{timestamp_str}] {current_speaker}: {text_line}")
+                    current_text = []
+                    current_start_time = segment_start
+                    last_timestamp_time = segment_start
             
             # Add text to current speaker's buffer
             current_text.append(segment_text)
         
         # Flush remaining text
         if current_text and current_speaker:
-            output_lines.append(f"{current_speaker}: {' '.join(current_text)}")
+            text_line = ' '.join(current_text)
+            if include_timestamps and current_start_time is not None:
+                timestamp_str = FormatUtils.format_timestamp(current_start_time, timestamp_format)
+                output_lines.append(f"[{timestamp_str}] {current_speaker}: {text_line}")
+            else:
+                output_lines.append(f"{current_speaker}: {text_line}")
         
         return "\n\n".join(output_lines)
     
