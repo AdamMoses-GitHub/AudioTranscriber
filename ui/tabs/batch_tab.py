@@ -363,11 +363,19 @@ class BatchTab:
         diarizer_loaded = False
         try:
             # Load model
-            self.app.model_manager.load_model(
+            success, error = self.app.model_manager.load_model(
                 self.app.engine.get(),
                 self.app.model_size.get(),
                 self.app.compute_type.get()
             )
+            if not success:
+                self.log(f"Error: Failed to load model. {error}")
+                messagebox.showerror(
+                    "Model Loading Error",
+                    f"Failed to load model.\n\n{error}",
+                    parent=self.frame
+                )
+                return
             
             # Setup batch processor
             options = {

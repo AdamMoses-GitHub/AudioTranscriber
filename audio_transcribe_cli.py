@@ -50,7 +50,10 @@ class AudioTranscriberCLI:
         
         # Load model
         print("Loading model...")
-        self.model_manager.load_model(args.engine, args.model, args.compute)
+        success, error = self.model_manager.load_model(args.engine, args.model, args.compute)
+        if not success:
+            print(f"Error: Failed to load model. {error}")
+            return 1
         
         # Transcribe
         start_time = time.time()

@@ -224,8 +224,8 @@ class SingleFileTab:
                                      state="disabled")
         self.cancel_btn.grid(row=0, column=1)
         
-        # Progress
-        self.progress = ttk.Progressbar(control_frame, mode='indeterminate')
+        # Progress bar (starts in indeterminate mode, switches to determinate during transcription)
+        self.progress = ttk.Progressbar(control_frame, mode='indeterminate', maximum=100)
         self.progress.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         
         # Results
@@ -278,7 +278,12 @@ class SingleFileTab:
         self.cancel_requested = False
         self.transcribe_btn.config(state="disabled")
         self.cancel_btn.config(state="normal")
+        
+        # Reset progress bar to indeterminate mode for model loading
+        self.progress.config(mode='indeterminate')
+        self.progress['value'] = 0
         self.progress.start()
+        
         self.text_area.delete("1.0", tk.END)
         
         # Freeze other tabs
@@ -292,11 +297,19 @@ class SingleFileTab:
             file_size = os.path.getsize(self.file_path) / (1024 * 1024)
             
             self.update_status("Loading model...")
-            self.app.model_manager.load_model(
+            success, error = self.app.model_manager.load_model(
                 self.app.engine.get(),
                 self.app.model_size.get(),
                 self.app.compute_type.get()
             )
+            if not success:
+                self.update_status(f"Error: Failed to load model")
+                messagebox.showerror(
+                    "Model Loading Error",
+                    f"Failed to load model.\n\n{error}",
+                    parent=self.frame
+                )
+                return
             
             start_time = time.time()
             
@@ -339,7 +352,8 @@ class SingleFileTab:
                         self.app.engine.get(),
                         self.app.diarizer,
                         self.num_speakers.get() if self.num_speakers.get() > 0 else None,
-                        options=options
+                        options=options,
+                        progress_callback=self._update_progress
                     )
                 finally:
                     # Cleanup diarizer
@@ -349,7 +363,8 @@ class SingleFileTab:
                 result = self.app.transcriber.transcribe_with_metadata(
                     self.file_path,
                     self.app.engine.get(),
-                    options=options
+                    options=options,
+                    progress_callback=self._update_progress
                 )
             
             # Extract results
@@ -418,6 +433,51 @@ class SingleFileTab:
         """Cancel processing."""
         self.cancel_requested = True
         self.cancel_btn.config(state="disabled")
+    
+    def _update_progress(self, progress, speed_factor, eta_seconds, current_position):
+        """Update progress bar and status with real-time metrics.
+        
+        Args:
+            progress: Progress as float 0.0 to 1.0
+            speed_factor: Processing speed relative to realtime (2.5 = 2.5x faster)
+            eta_seconds: Estimated seconds remaining
+            current_position: Current position in audio (seconds)
+        """
+        def update_ui():
+            # Switch to determinate mode if not already
+            if self.progress['mode'] == 'indeterminate':
+                self.progress.stop()
+                self.progress.config(mode='determinate')
+            
+            # Update progress bar (0-100)
+            self.progress['value'] = progress * 100
+            
+            # Format status message with metrics
+            percent = int(progress * 100)
+            
+            # Format current position
+            current_mins = int(current_position // 60)
+            current_secs = int(current_position % 60)
+            
+            # Format ETA
+            if eta_seconds and eta_seconds > 0:
+                eta_mins = int(eta_seconds // 60)
+                eta_secs = int(eta_seconds % 60)
+                if eta_mins > 0:
+                    eta_str = f"{eta_mins}m {eta_secs}s"
+                else:
+                    eta_str = f"{eta_secs}s"
+            else:
+                eta_str = "calculating..."
+            
+            # Format speed
+            speed_str = f"{speed_factor:.1f}x" if speed_factor > 0 else "..."
+            
+            # Build status message
+            status_msg = f"Transcribing: {percent}% ({current_mins}:{current_secs:02d}) | Speed: {speed_str} realtime | ETA: {eta_str}"
+            self.status.set(status_msg)
+        
+        self.app.root.after(0, update_ui)
     
     def save_transcript(self):
         """Save transcript to file."""

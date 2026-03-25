@@ -1,5 +1,6 @@
 """Transcriber for audio files."""
-from typing import Optional, List, Tuple, Dict, Any
+import time
+from typing import Optional, List, Tuple, Dict, Any, Callable
 from config.environment import WHISPER_AVAILABLE, FASTER_WHISPER_AVAILABLE
 from .metadata_extractor import MetadataExtractor
 from utilities.format_utils import FormatUtils
@@ -21,6 +22,49 @@ class Transcriber:
         self.model_manager = model_manager
         self.environment = environment
         self.metadata_extractor = MetadataExtractor()
+    
+    def _normalize_segments(self, model, model_type, audio_file):
+        """Normalize segments from model output into standard format.
+        
+        Handles both faster_whisper and whisper model output formats,
+        converting them to a uniform list of dicts with 'start', 'end', 'text' keys.
+        
+        Args:
+            model: The loaded model instance.
+            model_type: Either 'faster_whisper' or 'whisper'.
+            audio_file: Path to audio file (required for model validation).
+            
+        Returns:
+            Tuple of (segment_list, info) where info is model metadata (duration, language, etc).
+                segment_list: List of dicts with 'start', 'end', 'text' keys.
+                info: Model-specific info object containing duration and language.
+        """
+        segment_list = []
+        info = None
+        
+        if model_type == 'faster_whisper':
+            segments, info = model.transcribe(audio_file, beam_size=5, vad_filter=True)
+            for segment in segments:
+                segment_list.append({
+                    'start': segment.start,
+                    'end': segment.end,
+                    'text': segment.text
+                })
+        elif model_type == 'whisper':
+            result = model.transcribe(audio_file)
+            info = result  # Store the entire result for language and duration access
+            
+            if 'segments' in result:
+                for seg in result['segments']:
+                    segment_list.append({
+                        'start': seg.get('start', 0),
+                        'end': seg.get('end', 0),
+                        'text': seg.get('text', '')
+                    })
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
+        
+        return segment_list, info
     
     def transcribe(self, audio_file, engine, options=None):
         """Transcribe audio file (simple version).
@@ -45,64 +89,34 @@ class Transcriber:
                 "and ensure it downloaded successfully."
             )
         
-        # Transcribe based on model type
-        if model_type == 'faster_whisper':
-            segments, info = model.transcribe(audio_file, beam_size=5, vad_filter=True)
-            
-            # Collect segments with timing data
-            segment_list = []
-            for segment in segments:
-                segment_list.append({
-                    'start': segment.start,
-                    'end': segment.end,
-                    'text': segment.text
-                })
-            
-            # Apply timestamps if requested
-            if options and options.get('timestamps_enabled', False):
-                return FormatUtils.insert_interval_timestamps(
-                    segment_list,
-                    options.get('timestamp_interval', 30),
-                    options.get('timestamp_format', 'HH:MM:SS')
-                )
-            else:
-                # Concatenate text without timestamps using join() for efficiency
-                text = " ".join(seg['text'].strip() for seg in segment_list if seg['text'].strip())
-                return text
-                
-        elif model_type == 'whisper':
-            result = model.transcribe(audio_file)
-            
-            # Apply timestamps if requested
-            if options and options.get('timestamps_enabled', False) and 'segments' in result:
-                segment_list = []
-                for seg in result['segments']:
-                    segment_list.append({
-                        'start': seg.get('start', 0),
-                        'end': seg.get('end', 0),
-                        'text': seg.get('text', '')
-                    })
-                return FormatUtils.insert_interval_timestamps(
-                    segment_list,
-                    options.get('timestamp_interval', 30),
-                    options.get('timestamp_format', 'HH:MM:SS')
-                )
-            else:
-                return result["text"]
+        # Normalize segments from model output
+        segment_list, info = self._normalize_segments(model, model_type, audio_file)
+        
+        # Apply timestamps if requested
+        if options and options.get('timestamps_enabled', False):
+            return FormatUtils.insert_interval_timestamps(
+                segment_list,
+                options.get('timestamp_interval', 30),
+                options.get('timestamp_format', 'HH:MM:SS')
+            )
         else:
-            raise Exception("Unknown model type")
+            # Concatenate text without timestamps using join() for efficiency
+            text = " ".join(seg['text'].strip() for seg in segment_list if seg['text'].strip())
+            return text
     
-    def transcribe_with_metadata(self, audio_file, engine, options=None):
+    def transcribe_with_metadata(self, audio_file, engine, options=None, progress_callback=None):
         """Transcribe audio file and return comprehensive metadata.
         
         Args:
             audio_file: Path to audio file.
             engine: Engine type being used.
             options: Optional dict with timestamp settings (timestamps_enabled, timestamp_format, timestamp_interval).
+            progress_callback: Optional callback(progress, speed_factor, eta_seconds, current_position) for progress updates.
             
         Returns:
             Dictionary with text, language, duration, confidence, and audio metadata.
         """
+        start_time = time.time()
         # Resolve auto_gpu
         actual_engine = self.environment.resolve_engine(engine)
         
@@ -118,87 +132,82 @@ class Transcriber:
         # Get audio metadata
         audio_metadata = self.metadata_extractor.get_audio_metadata(audio_file)
         
-        # Transcribe based on model type
+        # Normalize segments from model output
+        segment_list, info = self._normalize_segments(model, model_type, audio_file)
+        
+        # Extract metadata based on model type
         if model_type == 'faster_whisper':
-            segments, info = model.transcribe(audio_file, beam_size=5, vad_filter=True)
+            language = info.language if hasattr(info, 'language') else 'Unknown'
+            duration = info.duration if hasattr(info, 'duration') else 0
             
-            # Collect segments with timing data
-            segment_list = []
+            # Calculate average confidence
             total_confidence = 0
             segment_count = 0
-            
-            for segment in segments:
-                segment_list.append({
-                    'start': segment.start,
-                    'end': segment.end,
-                    'text': segment.text
-                })
-                if hasattr(segment, 'avg_logprob'):
-                    total_confidence += segment.avg_logprob
-                    segment_count += 1
+            for segment in segment_list:
+                # We need to reprocess to get confidence - use original segments
+                segments, _ = model.transcribe(audio_file, beam_size=5, vad_filter=True)
+                for s in segments:
+                    if hasattr(s, 'avg_logprob'):
+                        total_confidence += s.avg_logprob
+                        segment_count += 1
+                break  # Just get info from first iteration
             
             avg_confidence = total_confidence / segment_count if segment_count > 0 else None
-            
-            # Apply timestamps if requested
-            if options and options.get('timestamps_enabled', False):
-                text = FormatUtils.insert_interval_timestamps(
-                    segment_list,
-                    options.get('timestamp_interval', 30),
-                    options.get('timestamp_format', 'HH:MM:SS')
-                )
-            else:
-                # Concatenate text without timestamps
-                text = ""
-                for seg in segment_list:
-                    text += seg['text'] + " "
-                text = text.strip()
-            
-            return {
-                'text': text,
-                'language': info.language if hasattr(info, 'language') else 'Unknown',
-                'duration': info.duration if hasattr(info, 'duration') else 0,
-                'avg_logprob': avg_confidence,
-                'audio_metadata': audio_metadata
-            }
         elif model_type == 'whisper':
-            result = model.transcribe(audio_file)
+            language = info.get('language', 'Unknown') if isinstance(info, dict) else 'Unknown'
+            duration = info.get('duration', 0) if isinstance(info, dict) else 0
             
-            # Calculate average confidence from segments if available
+            # Calculate average confidence from segments
             avg_confidence = None
-            if 'segments' in result and len(result['segments']) > 0:
-                confidences = [seg.get('avg_logprob', 0) for seg in result['segments']]
+            if isinstance(info, dict) and 'segments' in info and len(info['segments']) > 0:
+                confidences = [seg.get('avg_logprob', 0) for seg in info['segments']]
                 avg_confidence = sum(confidences) / len(confidences) if confidences else None
-            
-            # Apply timestamps if requested
-            if options and options.get('timestamps_enabled', False) and 'segments' in result:
-                segment_list = []
-                for seg in result['segments']:
-                    segment_list.append({
-                        'start': seg.get('start', 0),
-                        'end': seg.get('end', 0),
-                        'text': seg.get('text', '')
-                    })
-                text = FormatUtils.insert_interval_timestamps(
-                    segment_list,
-                    options.get('timestamp_interval', 30),
-                    options.get('timestamp_format', 'HH:MM:SS')
-                )
-            else:
-                # Concatenate text without timestamps using join() for efficiency
-                text = result.get('text', '')
-            
-            return {
-                'text': text,
-                'language': result.get('language', 'Unknown'),
-                'duration': result.get('duration', 0),
-                'avg_logprob': avg_confidence,
-                'audio_metadata': audio_metadata
-            }
         else:
-            raise Exception("Unknown model type")
+            language = 'Unknown'
+            duration = 0
+            avg_confidence = None
+        
+        # Report progress if callback provided
+        if progress_callback and duration > 0:
+            for i, segment in enumerate(segment_list):
+                elapsed_time = time.time() - start_time
+                current_position = segment['end']
+                progress = min(current_position / duration, 1.0)
+                
+                # Calculate speed factor (how much faster than realtime)
+                speed_factor = current_position / elapsed_time if elapsed_time > 0 else 0
+                
+                # Estimate time remaining
+                remaining_audio = duration - current_position
+                eta_seconds = remaining_audio / speed_factor if speed_factor > 0 else None
+                
+                progress_callback(progress, speed_factor, eta_seconds, current_position)
+        
+        # Apply timestamps if requested
+        if options and options.get('timestamps_enabled', False):
+            text = FormatUtils.insert_interval_timestamps(
+                segment_list,
+                options.get('timestamp_interval', 30),
+                options.get('timestamp_format', 'HH:MM:SS')
+            )
+        else:
+            # Concatenate text without timestamps
+            text = ""
+            for seg in segment_list:
+                text += seg['text'] + " "
+            text = text.strip()
+        
+        return {
+            'text': text,
+            'language': language,
+            'duration': duration,
+            'avg_logprob': avg_confidence,
+            'audio_metadata': audio_metadata
+        }
     
     def transcribe_with_diarization(self, audio_file: str, engine: str, diarizer: Any, 
-                                     num_speakers: Optional[int] = None, options: Optional[Dict] = None) -> Dict:
+                                     num_speakers: Optional[int] = None, options: Optional[Dict] = None,
+                                     progress_callback: Optional[Callable] = None) -> Dict:
         """Transcribe audio file with speaker diarization.
         
         Args:
@@ -207,6 +216,7 @@ class Transcriber:
             diarizer: Diarizer instance (already loaded with pipeline).
             num_speakers: Number of expected speakers (None = auto-detect).
             options: Optional dict with timestamp settings.
+            progress_callback: Optional callback(progress, speed_factor, eta_seconds, current_position) for progress updates.
             
         Returns:
             Dictionary with text (speaker-labeled), language, duration, confidence, 
@@ -224,7 +234,7 @@ class Transcriber:
         transcribe_options = options.copy() if options else {}
         transcribe_options['timestamps_enabled'] = False  # Format timestamps with speakers in merge step
         
-        result = self.transcribe_with_metadata(audio_file, engine, transcribe_options)
+        result = self.transcribe_with_metadata(audio_file, engine, transcribe_options, progress_callback=progress_callback)
         
         # Step 3: Get segments with timestamps for merging
         logger.info("Step 3/3: Merging speaker labels with transcript...")
@@ -260,26 +270,8 @@ class Transcriber:
         if not model:
             raise RuntimeError("No model loaded")
         
-        segment_list = []
-        
-        if model_type == 'faster_whisper':
-            segments, info = model.transcribe(audio_file, beam_size=5, vad_filter=True)
-            for segment in segments:
-                segment_list.append({
-                    'start': segment.start,
-                    'end': segment.end,
-                    'text': segment.text
-                })
-        elif model_type == 'whisper':
-            result = model.transcribe(audio_file)
-            if 'segments' in result:
-                for seg in result['segments']:
-                    segment_list.append({
-                        'start': seg.get('start', 0),
-                        'end': seg.get('end', 0),
-                        'text': seg.get('text', '')
-                    })
-        
+        # Use the normalized segments method
+        segment_list, info = self._normalize_segments(model, model_type, audio_file)
         return segment_list
     
     def _merge_speakers_with_transcript(self, speaker_timeline: List[Tuple[float, float, str]], 

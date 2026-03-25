@@ -30,6 +30,7 @@ class BatchProcessor:
         self.failed_files = 0
         self.processing_times = []
         self.start_time = None
+        self.failed_files_with_reasons = {}  # Dict of filename -> reason for failure
     
     def process_batch(self, input_folder, output_folder, options, progress_callback=None, log_callback=None):
         """Process a batch of audio files.
@@ -52,6 +53,7 @@ class BatchProcessor:
         self.successful_files = 0
         self.failed_files = 0
         self.processing_times = []
+        self.failed_files_with_reasons = {}
         self.start_time = time.time()
         
         # Get audio files
@@ -215,8 +217,28 @@ class BatchProcessor:
             return True
             
         except Exception as e:
+            # Provide detailed error context for better user debugging
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            # Build detailed failure message based on error type
+            if "audio" in error_msg.lower() or "format" in error_msg.lower():
+                reason = "Unsupported audio format or corrupted file"
+            elif "memory" in error_msg.lower() or "cuda" in error_msg.lower():
+                reason = "Insufficient memory (try smaller model or CPU mode)"
+            elif "permission" in error_msg.lower():
+                reason = "File permission issue"
+            elif "not found" in error_msg.lower():
+                reason = "File not found or missing dependency"
+            else:
+                reason = f"{error_type}: {error_msg}"
+            
+            # Track failure reason
+            self.failed_files_with_reasons[os.path.basename(audio_file)] = reason
+            
             if log_callback:
-                log_callback(f"❌ Failed: {e}")
+                log_callback(f"❌ Failed [{reason}]: {os.path.basename(audio_file)}")
+            
             return False
     
     def _create_summary(self, output_folder, total_time, log_callback):
@@ -242,6 +264,15 @@ class BatchProcessor:
                 if self.processing_times:
                     avg_time = sum(self.processing_times) / len(self.processing_times)
                     f.write(f"Average Time per File: {FormatUtils.format_time(avg_time)}\n")
+                
+                # Include failure details if there were failures
+                if self.failed_files_with_reasons:
+                    f.write("\n" + "-" * 60 + "\n")
+                    f.write("FAILED FILES\n")
+                    f.write("-" * 60 + "\n\n")
+                    for filename, reason in sorted(self.failed_files_with_reasons.items()):
+                        f.write(f"• {filename}\n")
+                        f.write(f"  Reason: {reason}\n\n")
             
             if log_callback:
                 log_callback(f"📄 Summary saved: {os.path.basename(report_file)}")
