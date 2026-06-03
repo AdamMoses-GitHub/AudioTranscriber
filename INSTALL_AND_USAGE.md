@@ -28,8 +28,15 @@ Complete installation instructions and usage documentation for Audio Transcriber
    ```
 
 2. **Install Python dependencies**
+
+   **GPU setup (recommended if you have an NVIDIA GPU):**
    ```bash
-   pip install -r requirements.txt
+   pip install -r requirements-gpu.txt
+   ```
+
+   **CPU-only setup (works on any machine, slower):**
+   ```bash
+   pip install -r requirements-cpu.txt
    ```
 
 3. **Install FFmpeg** (if not already installed)
@@ -37,9 +44,9 @@ Complete installation instructions and usage documentation for Audio Transcriber
    - **macOS**: `brew install ffmpeg`
    - **Linux**: `sudo apt-get install ffmpeg`
 
-### GPU Acceleration Setup (Optional but Recommended)
+### GPU Acceleration Setup
 
-For NVIDIA GPU acceleration, install PyTorch with CUDA support:
+The GPU requirements file (`requirements-gpu.txt`) already pulls PyTorch with CUDA 12.4 support. If you need a different CUDA version, install PyTorch manually after the base install:
 
 ```bash
 # For CUDA 11.8
@@ -93,11 +100,12 @@ python audio_transcribe_gui.py
 5. Monitor progress in real-time log
 
 **Model Configuration Tab**
-- Choose transcription engine (auto_gpu, whisper, faster_whisper)
-- Select model size (tiny to large-v3)
-- Set compute precision (int8, float16, float32)
+- Choose transcription engine: `faster_whisper_gpu`, `faster_whisper_cpu`, `whisper_gpu`, `whisper_cpu`, or `auto_gpu`
+- Select model size (tiny to large-v3, including turbo)
+- Set compute precision (int8, int8_float16, float16)
 - Download models and view model information
 - Check GPU status and capabilities
+- Configure speaker diarization (HuggingFace token + pyannote model)
 
 **About Tab**
 - View application features and system information
@@ -132,6 +140,9 @@ python audio_transcribe_cli.py single recording.mp3 \
   --engine faster_whisper \
   --compute float16 \
   --chars-per-line 100 \
+  --timestamps \
+  --timestamp-format HH:MM:SS \
+  --timestamp-interval 60 \
   --no-detect-date
 ```
 
@@ -161,7 +172,9 @@ python audio_transcribe_cli.py batch ./recordings ./transcripts \
   --recursive \
   --preserve-structure \
   --skip-existing \
-  --create-summary
+  --create-summary \
+  --timestamps \
+  --timestamp-interval 30
 ```
 
 #### System Information
@@ -177,18 +190,21 @@ python audio_transcribe_cli.py info
 
 - `INPUT_FILE`: Audio file to transcribe (required)
 - `-o, --output`: Output file path (optional, defaults to input name with .txt)
-- `--engine`: whisper | faster_whisper | auto_gpu (default: auto_gpu)
-- `--model`: tiny | base | small | medium | large | large-v2 | large-v3 (default: base)
-- `--compute`: int8 | int8_float16 | float16 | float32 (default: float16)
+- `--engine`: `whisper` | `faster_whisper` | `auto_gpu` (default: `auto_gpu`)
+- `--model`: `tiny` | `base` | `small` | `medium` | `large` | `large-v2` | `large-v3` | `turbo` (default: `base`)
+- `--compute`: `int8` | `int8_float16` | `float16` | `float32` (default: `float16`)
 - `--detect-date`: Enable date detection (default: enabled)
 - `--no-detect-date`: Disable date detection
 - `--chars-per-line N`: Characters per line, 0=no breaks (default: 80)
+- `--timestamps`: Embed timestamps throughout the transcript
+- `--timestamp-format`: `HH:MM:SS` | `MM:SS` | `timecode` (default: `HH:MM:SS`)
+- `--timestamp-interval SECONDS`: Seconds between timestamps; 15, 30, 60, 120, 300, 600 (default: 30)
 
 ### Batch Processing Options
 
 - `INPUT_FOLDER`: Folder with audio files (required)
 - `OUTPUT_FOLDER`: Folder for transcripts (required)
-- All single file options, plus:
+- All single file options (including `--timestamps`, `--timestamp-format`, `--timestamp-interval`), plus:
 - `--skip-existing`: Skip files with existing transcripts
 - `--create-summary`: Generate batch summary report
 - `--preserve-structure`: Maintain input folder hierarchy
@@ -210,9 +226,35 @@ python audio_transcribe_cli.py batch --help
 | base | 74M | ~0.5GB | 20-40x | Good | **General use** | ~150MB |
 | small | 244M | ~1GB | 10-20x | Better | High quality | ~500MB |
 | medium | 769M | ~2GB | 5-10x | High | Professional | ~1.5GB |
+| turbo | 809M | ~3GB | 8-15x | High | Balanced speed & accuracy | ~1.6GB |
 | large-v3 | 1550M | ~6GB | 2-5x | Highest | Critical accuracy | ~3GB |
 
-**Recommendation**: Start with `base` model for general use. Upgrade to `small` or `medium` for better accuracy if you have sufficient VRAM.
+**Recommendation**: Start with `base` for general use. Try `turbo` for a solid speed/accuracy balance, or `small`/`medium` if you need better accuracy without jumping all the way to `large-v3`.
+
+## Speaker Diarization
+
+Speaker diarization labels each segment of the transcript with who is speaking (e.g., `SPEAKER_00`, `SPEAKER_01`). It uses [pyannote.audio 3.1](https://github.com/pyannote/pyannote-audio) and requires a free HuggingFace account.
+
+### Setup
+
+1. **Create a HuggingFace account** at [huggingface.co](https://huggingface.co)
+2. **Accept the model license** at [huggingface.co/pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
+3. **Generate an access token** at [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+4. **Enter the token** in the GUI under *Model Configuration → Diarization* tab
+
+### GUI Usage
+
+1. Open the **Diarization** sub-tab under Model Configuration
+2. Paste your HuggingFace token and click **Test Token**
+3. Enable diarization in the Single File or Batch Processing tab
+4. Optionally set the number of speakers (or leave at 0 for auto-detection)
+
+### Notes
+- Diarization runs after transcription and requires additional processing time
+- CPU diarization is significantly slower; GPU is recommended
+- The pyannote model is downloaded the first time it's used (~1GB)
+- Speaker labels appear inline as `[SPEAKER_00]`, `[SPEAKER_01]`, etc.
+- No CLI flag yet — diarization is GUI-only in the current release
 
 ## Configuration
 
@@ -267,9 +309,9 @@ Confidence:        89.5%
 
 **Solution**:
 1. Verify CUDA installation: `nvidia-smi`
-2. Install PyTorch with CUDA support:
+2. Install the GPU requirements file:
    ```bash
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+   pip install -r requirements-gpu.txt
    ```
 3. Verify: `python -c "import torch; print(torch.cuda.is_available())"`
 
@@ -360,6 +402,6 @@ Confidence:        89.5%
 
 - **Language Support**: Best results with English; other languages supported but may have lower accuracy
 - **Audio Quality**: Poor quality recordings will have lower transcription accuracy
-- **Speaker Separation**: Does not distinguish between multiple speakers
+- **Speaker Diarization CLI**: Diarization is currently GUI-only; no CLI flag yet
 - **Python 3.14**: Faster-Whisper may not install due to av package issues
-- **macOS ARM**: Some CUDA features may not be available on Apple Silicon
+- **macOS ARM**: CUDA is not available on Apple Silicon; CPU-only mode applies
