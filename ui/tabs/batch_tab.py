@@ -137,7 +137,7 @@ class BatchTab:
         recursive_frame = ttk.Frame(opts_grid)
         recursive_frame.grid(row=2, column=1, sticky="w", pady=(5, 0))
         ttk.Checkbutton(recursive_frame, text="Recursively check for audio files",
-                       variable=self.recursive, command=self.app.save_config).grid(
+                       variable=self.recursive, command=self._on_recursive_toggle).grid(
                            row=0, column=0, sticky="w")
         ttk.Button(recursive_frame, text="?", width=3, command=self.show_recursive_help).grid(
             row=0, column=1, padx=(5, 0))
@@ -321,6 +321,14 @@ class BatchTab:
             self.check_ready()
             self.app.save_config()
     
+    def _on_recursive_toggle(self):
+        """Handle recursive checkbox toggle — re-scan input folder and update button state."""
+        self.app.save_config()
+        if self.input_folder:
+            audio_files = FileUtils.get_audio_files(self.input_folder, self.recursive.get())
+            self.log(f"🔄 Recursive search {'enabled' if self.recursive.get() else 'disabled'}: found {len(audio_files)} audio file(s)")
+            self.check_ready()
+
     def check_ready(self):
         """Check if batch processing is ready."""
         if self.input_folder and self.output_folder:

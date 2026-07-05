@@ -393,6 +393,14 @@ class SingleFileTab:
             gpu_name = None
             if self.app.environment.gpu_available:
                 gpu_name = self.app.environment.get_gpu_info()['name']
+
+            diarization_metadata = {
+                'enabled': self.diarization_enabled.get() and self.app.environment.pyannote_available,
+                'requested_speakers': self.num_speakers.get() if self.num_speakers.get() > 0 else None,
+                'detected_speakers': result.get('num_speakers') if isinstance(result, dict) else None,
+                'model': 'pyannote/speaker-diarization-3.1' if self.diarization_enabled.get() and self.app.environment.pyannote_available else None,
+                'token_configured': bool(self.app.hf_token.get().strip()) if self.diarization_enabled.get() else None
+            }
             
             metadata_header = FormatUtils.build_transcript_metadata(
                 file_name=os.path.basename(self.file_path),
@@ -407,7 +415,8 @@ class SingleFileTab:
                 detected_date=detected_date,
                 day_of_week=day_of_week,
                 gpu_available=self.app.environment.gpu_available,
-                gpu_name=gpu_name
+                gpu_name=gpu_name,
+                diarization_metadata=diarization_metadata
             )
             
             final_text = metadata_header + text

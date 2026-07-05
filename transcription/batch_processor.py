@@ -192,6 +192,15 @@ class BatchProcessor:
                 if hasattr(self.model_manager, 'environment') and self.model_manager.environment.gpu_available:
                     gpu_available = True
                     gpu_name = self.model_manager.environment.get_gpu_info()['name']
+
+                diarization_requested = options.get('diarization_enabled', False)
+                diarization_metadata = {
+                    'enabled': diarization_requested,
+                    'requested_speakers': options.get('num_speakers'),
+                    'detected_speakers': result.get('num_speakers') if isinstance(result, dict) else None,
+                    'model': 'pyannote/speaker-diarization-3.1' if diarization_requested else None,
+                    'token_configured': True if diarization_requested else None
+                }
                 
                 metadata_header = FormatUtils.build_transcript_metadata(
                     file_name=file_name,
@@ -206,7 +215,8 @@ class BatchProcessor:
                     detected_date=detected_date,
                     day_of_week=day_of_week,
                     gpu_available=gpu_available,
-                    gpu_name=gpu_name
+                    gpu_name=gpu_name,
+                    diarization_metadata=diarization_metadata
                 )
                 f.write(metadata_header)
                 f.write(formatted_text)

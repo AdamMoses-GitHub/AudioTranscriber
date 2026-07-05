@@ -213,7 +213,7 @@ class FormatUtils:
                                    compute_type: str, language: str, 
                                    avg_confidence: float = None, detected_date = None, 
                                    day_of_week: str = None, gpu_available: bool = False,
-                                   gpu_name: str = None) -> str:
+                                   gpu_name: str = None, diarization_metadata: dict = None) -> str:
         """Build comprehensive metadata header for transcript files.
         
         Centralizes the common metadata formatting logic used across transcriber
@@ -233,6 +233,10 @@ class FormatUtils:
             day_of_week: Detected day of week (optional).
             gpu_available: Whether GPU is available (optional).
             gpu_name: Name of GPU if available (optional).
+            diarization_metadata: Optional diarization details dictionary with keys:
+                                enabled (bool), requested_speakers (int/None),
+                                detected_speakers (int/None), model (str/None),
+                                token_configured (bool/None).
             
         Returns:
             Formatted metadata header string.
@@ -292,6 +296,29 @@ class FormatUtils:
         if avg_confidence is not None:
             confidence_pct = (1 + avg_confidence) * 100
             lines.append(f"Confidence:        {confidence_pct:.1f}%\n")
+
+        # Diarization details (when available)
+        if diarization_metadata is not None:
+            diarization_enabled = diarization_metadata.get('enabled', False)
+            lines.append(f"Diarization:       {'Enabled' if diarization_enabled else 'Disabled'}\n")
+
+            requested_speakers = diarization_metadata.get('requested_speakers')
+            if requested_speakers is None:
+                lines.append("Requested Speakers: Auto\n")
+            else:
+                lines.append(f"Requested Speakers: {requested_speakers}\n")
+
+            detected_speakers = diarization_metadata.get('detected_speakers')
+            if detected_speakers is not None:
+                lines.append(f"Detected Speakers: {detected_speakers}\n")
+
+            diarization_model = diarization_metadata.get('model')
+            if diarization_model:
+                lines.append(f"Diarization Model: {diarization_model}\n")
+
+            token_configured = diarization_metadata.get('token_configured')
+            if token_configured is not None:
+                lines.append(f"HF Token Set:      {'Yes' if token_configured else 'No'}\n")
         
         lines.append("=" * 60 + "\n\n")
         

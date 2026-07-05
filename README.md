@@ -40,6 +40,7 @@ Supports MP3, WAV, M4A, FLAC, AAC, OGG, and WebM. If it makes noise, we'll proba
 - Real-time progress tracking because watching bars fill up is oddly satisfying
 - Configurable timestamp injection at 15s / 30s / 1 min / 2 min / 5 min / 10 min intervals
 - Speaker diarization via pyannote.audio 3.1 — auto-detects speaker count or you can specify
+- Transcript headers now include diarization metadata: enabled/disabled state, requested speaker count, detected speakers, diarization model, and Hugging Face token status (never the token itself)
 
 ## Quick Start
 
