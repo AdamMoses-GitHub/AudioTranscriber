@@ -109,6 +109,20 @@ class FormatUtils:
             formatted.append('\n'.join(lines))
             
         return '\n'.join(formatted)
+
+    @staticmethod
+    def count_words(text):
+        """Count words in a text string.
+
+        Args:
+            text: Input text.
+
+        Returns:
+            Word count as an integer.
+        """
+        if not isinstance(text, str):
+            return 0
+        return len(text.split())
     
     @staticmethod
     def format_file_size(size_bytes):

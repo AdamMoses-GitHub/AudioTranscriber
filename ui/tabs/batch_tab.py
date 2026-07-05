@@ -23,6 +23,8 @@ class BatchTab:
         # State variables
         self.input_folder = None
         self.output_folder = None
+        self.open_input_btn = None
+        self.open_output_btn = None
         
         # Configuration variables
         self.detect_date = tk.BooleanVar(value=True)
@@ -38,6 +40,17 @@ class BatchTab:
         # Diarization variables
         self.diarization_enabled = tk.BooleanVar(value=False)
         self.num_speakers = tk.IntVar(value=0)  # 0 = auto-detect
+
+        # Live metrics labels
+        self.metrics_current_file_label = None
+        self.metrics_eta_label = None
+        self.metrics_throughput_label = None
+        self.metrics_risk_label = None
+        self.metrics_estimation_label = None
+        self.batch_state = "Idle"
+        self.current_file_name = None
+        self.pre_scan_cache_used = False
+        self.pre_scan_cached_at = None
         
         self._create_ui()
     
@@ -65,6 +78,13 @@ class BatchTab:
                                      foreground="gray", relief=tk.SUNKEN, anchor=tk.W, padding=(5, 2))
         self.input_label.grid(row=0, column=0, sticky="ew", padx=(0, 5))
         ttk.Button(input_frame, text="Browse", command=self.select_input).grid(row=0, column=1)
+        self.open_input_btn = ttk.Button(
+            input_frame,
+            text="Open",
+            command=lambda: self.open_folder_in_file_browser(self.input_folder),
+            state="disabled"
+        )
+        self.open_input_btn.grid(row=0, column=2, padx=(5, 0))
         
         # Output folder
         ttk.Label(folder_frame, text="Output Folder:").grid(row=1, column=0, sticky="w", pady=5)
@@ -76,6 +96,13 @@ class BatchTab:
                                       foreground="gray", relief=tk.SUNKEN, anchor=tk.W, padding=(5, 2))
         self.output_label.grid(row=0, column=0, sticky="ew", padx=(0, 5))
         ttk.Button(output_frame, text="Browse", command=self.select_output).grid(row=0, column=1)
+        self.open_output_btn = ttk.Button(
+            output_frame,
+            text="Open",
+            command=lambda: self.open_folder_in_file_browser(self.output_folder),
+            state="disabled"
+        )
+        self.open_output_btn.grid(row=0, column=2, padx=(5, 0))
         
         # Options
         options_frame = ttk.LabelFrame(self.frame, text="Processing Options", padding="10")
@@ -284,6 +311,87 @@ class BatchTab:
         self.stats_label.grid(row=0, column=0, sticky="w")
         self.eta_label = ttk.Label(stats_frame, text="", font=("Arial", 9), foreground="gray")
         self.eta_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        # Info panel with live metrics
+        metrics_frame = ttk.LabelFrame(control_frame, text="Info Panel", padding="8")
+        metrics_frame.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        metrics_frame.columnconfigure(0, weight=1)
+        metrics_frame.columnconfigure(1, weight=1)
+
+        self.metrics_current_file_label = ttk.Label(
+            metrics_frame,
+            text="State: Idle | Progress: 0/0 | Current: -",
+            font=("Consolas", 9, "bold"),
+            anchor="w"
+        )
+        self.metrics_current_file_label.grid(row=0, column=0, columnspan=2, sticky="ew")
+
+        ttk.Label(
+            metrics_frame,
+            text="Time",
+            font=("Arial", 8, "bold"),
+            foreground="gray"
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        ttk.Label(
+            metrics_frame,
+            text="Throughput",
+            font=("Arial", 8, "bold"),
+            foreground="gray"
+        ).grid(row=1, column=1, sticky="w", pady=(4, 0))
+
+        self.metrics_eta_label = ttk.Label(
+            metrics_frame,
+            text="Elapsed: 0s | ETA: - | Confidence: Low | Basis: Estimated",
+            font=("Consolas", 9),
+            anchor="w",
+            justify="left"
+        )
+        self.metrics_eta_label.grid(row=2, column=0, sticky="ew", pady=(2, 0), padx=(0, 8))
+
+        self.metrics_throughput_label = ttk.Label(
+            metrics_frame,
+            text="Throughput (rolling): - files/hr | - words/sec | Speed: -",
+            font=("Consolas", 9),
+            foreground="gray",
+            anchor="w",
+            justify="left"
+        )
+        self.metrics_throughput_label.grid(row=2, column=1, sticky="ew", pady=(2, 0))
+
+        ttk.Label(
+            metrics_frame,
+            text="Risk",
+            font=("Arial", 8, "bold"),
+            foreground="gray"
+        ).grid(row=3, column=0, sticky="w", pady=(4, 0))
+
+        ttk.Label(
+            metrics_frame,
+            text="Estimation",
+            font=("Arial", 8, "bold"),
+            foreground="gray"
+        ).grid(row=3, column=1, sticky="w", pady=(4, 0))
+
+        self.metrics_risk_label = ttk.Label(
+            metrics_frame,
+            text="Risk: failures 0 (0.0%) | Top reason: - | Slow files: 0",
+            font=("Consolas", 9),
+            foreground="gray",
+            anchor="w",
+            justify="left"
+        )
+        self.metrics_risk_label.grid(row=4, column=0, sticky="ew", pady=(2, 0), padx=(0, 8))
+
+        self.metrics_estimation_label = ttk.Label(
+            metrics_frame,
+            text="Estimation: observed 0 | estimated 0 | pre-scan cache: no",
+            font=("Consolas", 9),
+            foreground="gray",
+            anchor="w",
+            justify="left"
+        )
+        self.metrics_estimation_label.grid(row=4, column=1, sticky="ew", pady=(2, 0))
         
         # Log
         log_frame = ttk.LabelFrame(self.frame, text="Processing Log", padding="10")
@@ -309,6 +417,7 @@ class BatchTab:
             self.log(f"📁 Input folder selected: {folder}")
             self.log(f"📊 Found {len(audio_files)} audio file(s)")
             self.check_ready()
+            self._update_folder_open_buttons()
             self.app.save_config()
     
     def select_output(self):
@@ -319,7 +428,30 @@ class BatchTab:
             self.output_label.config(text=folder, foreground="black")
             self.log(f"📁 Output folder selected: {folder}")
             self.check_ready()
+            self._update_folder_open_buttons()
             self.app.save_config()
+
+    def open_folder_in_file_browser(self, folder_path):
+        """Open folder in the OS file browser if it exists."""
+        if not folder_path or not os.path.isdir(folder_path):
+            messagebox.showwarning("Folder Not Available", "The selected folder does not exist.", parent=self.frame)
+            self._update_folder_open_buttons()
+            return
+
+        try:
+            os.startfile(folder_path)
+        except Exception as e:
+            messagebox.showerror("Open Folder Error", f"Could not open folder:\n\n{e}", parent=self.frame)
+
+    def _update_folder_open_buttons(self):
+        """Enable/disable Open buttons based on selected folder existence."""
+        if self.open_input_btn:
+            input_exists = bool(self.input_folder and os.path.isdir(self.input_folder))
+            self.open_input_btn.config(state="normal" if input_exists else "disabled")
+
+        if self.open_output_btn:
+            output_exists = bool(self.output_folder and os.path.isdir(self.output_folder))
+            self.open_output_btn.config(state="normal" if output_exists else "disabled")
     
     def _on_recursive_toggle(self):
         """Handle recursive checkbox toggle — re-scan input folder and update button state."""
@@ -331,6 +463,7 @@ class BatchTab:
 
     def check_ready(self):
         """Check if batch processing is ready."""
+        self._update_folder_open_buttons()
         if self.input_folder and self.output_folder:
             audio_files = FileUtils.get_audio_files(self.input_folder, self.recursive.get())
             if len(audio_files) > 0:
@@ -364,6 +497,8 @@ class BatchTab:
         self.log(f"📊 Total files: {len(audio_files)}")
         self.log("=" * 80)
         
+        self._reset_metrics_panel()
+        self.batch_state = "Starting"
         threading.Thread(target=self._batch_worker, daemon=True).start()
     
     def _batch_worker(self):
@@ -399,8 +534,23 @@ class BatchTab:
                 'timestamps_enabled': self.timestamps_enabled.get(),
                 'timestamp_format': self.timestamp_format.get(),
                 'timestamp_interval': self.timestamp_interval.get(),
+                'estimated_wpm': 150,
+                'diarization_fallback_to_plain': True,
                 'diarization_enabled': False  # Default
             }
+
+            self.batch_state = "Pre-scan"
+            # Pre-scan all files before actual processing to improve ETA and queue metrics.
+            pre_scan_data = self.app.batch_processor.pre_scan_batch(
+                self.input_folder,
+                self.output_folder,
+                options,
+                log_callback=self.log
+            )
+            self.pre_scan_cache_used = bool(pre_scan_data.get('cache_used', False))
+            self.pre_scan_cached_at = pre_scan_data.get('cache_cached_at')
+
+            self.app.root.after(0, lambda: self._refresh_metrics_panel(current=0, total=pre_scan_data.get('total_files', 0), current_file=None))
             
             # Check if diarization is enabled
             if self.diarization_enabled.get() and self.app.environment.pyannote_available:
@@ -437,8 +587,10 @@ class BatchTab:
                 self.output_folder,
                 options,
                 progress_callback=self._update_progress,
-                log_callback=self.log
+                log_callback=self.log,
+                pre_scan_data=pre_scan_data
             )
+            self.batch_state = "Done"
             
             self.log("\n" + "=" * 80)
             self.log("✅ Batch processing complete!")
@@ -446,7 +598,11 @@ class BatchTab:
             self.log(f"✅ Successful: {results['successful']}/{results['total']}")
             if results['failed'] > 0:
                 self.log(f"❌ Failed: {results['failed']}")
+            if results.get('skipped', 0) > 0:
+                self.log(f"⏭️  Skipped existing: {results['skipped']}")
             self.log("=" * 80)
+
+            self.app.root.after(0, lambda: self._refresh_metrics_panel(final=True))
             
             if not self.app.batch_processor.cancel_requested:
                 self.app.root.after(0, lambda: messagebox.showinfo(
@@ -454,6 +610,7 @@ class BatchTab:
                     f"Successfully processed {results['successful']}/{results['total']} files"))
         
         except Exception as e:
+            self.batch_state = "Error"
             self.log(f"\n❌ Error: {e}")
             self.app.root.after(0, lambda e=e: messagebox.showerror("Error", f"Batch failed: {e}"))
         finally:
@@ -470,21 +627,163 @@ class BatchTab:
         self.app.root.after(0, self.current_progress.start)
         
         stats = self.app.batch_processor.get_statistics()
+        self.batch_state = "Running"
+        self.current_file_name = os.path.basename(current_file) if current_file else None
         stats_text = (f"Processing: {current}/{total} | "
-                     f"Success: {stats['successful']} | Failed: {stats['failed']}")
+                     f"Success: {stats['successful']} | Skipped: {stats.get('skipped', 0)} | "
+                     f"Failed: {stats['failed']}")
         self.app.root.after(0, lambda: self.stats_label.config(text=stats_text))
-        
-        if len(stats['processing_times']) >= 2:
-            avg_time = sum(stats['processing_times']) / len(stats['processing_times'])
-            remaining = total - current
-            eta = avg_time * remaining
-            elapsed = time.time() - self.app.batch_processor.start_time
-            eta_text = f"ETA: {FormatUtils.format_time(eta)} | Elapsed: {FormatUtils.format_time(elapsed)}"
-            self.app.root.after(0, lambda: self.eta_label.config(text=eta_text))
+
+        self._refresh_metrics_panel(current=current, total=total, current_file=current_file)
+
+    def _reset_metrics_panel(self):
+        """Reset the info panel before a new run."""
+        if self.metrics_current_file_label:
+            self.metrics_current_file_label.config(text="State: Idle | Progress: 0/0 | Current: -")
+        if self.metrics_eta_label:
+            self.metrics_eta_label.config(text="Elapsed: 0s | ETA: - | Confidence: Low | Basis: Estimated")
+        if self.metrics_throughput_label:
+            self.metrics_throughput_label.config(text="Throughput (rolling): - files/hr | - words/sec | Speed: -")
+        if self.metrics_risk_label:
+            self.metrics_risk_label.config(text="Risk: failures 0 (0.0%) | Top reason: - | Slow files: 0")
+        if self.metrics_estimation_label:
+            self.metrics_estimation_label.config(text="Estimation: observed 0 | estimated 0 | pre-scan cache: no")
+        self.eta_label.config(text="")
+
+    def _refresh_metrics_panel(self, current=None, total=None, current_file=None, final=False):
+        """Refresh live metrics shown in the info panel."""
+        stats = self.app.batch_processor.get_statistics()
+
+        if current is None:
+            current = stats.get('processed', 0)
+        if total is None:
+            total = stats.get('total', 0)
+
+        start_time = self.app.batch_processor.start_time
+        elapsed = (time.time() - start_time) if start_time else 0
+
+        processing_times = stats.get('processing_times', [])
+        avg_time = (sum(processing_times) / len(processing_times)) if processing_times else 0
+        remaining = max(total - current, 0)
+
+        estimated_remaining_audio = stats.get('estimated_remaining_audio_seconds', 0)
+        observed_audio = sum(stats.get('audio_durations', []))
+        observed_speed_ratio = (observed_audio / sum(processing_times)) if processing_times and sum(processing_times) > 0 else 0
+
+        if final:
+            eta_seconds = 0
+            eta_mode = "complete"
+        elif observed_speed_ratio > 0 and estimated_remaining_audio > 0:
+            eta_seconds = estimated_remaining_audio / observed_speed_ratio
+            eta_mode = "weighted-audio"
+        else:
+            eta_seconds = avg_time * remaining if avg_time > 0 else 0
+            eta_mode = "avg-file-time"
+
+        # ETA confidence from observed sample size and volatility.
+        confidence = "Low"
+        if len(processing_times) >= 3:
+            mean_t = avg_time if avg_time > 0 else 1
+            variance = sum((x - mean_t) ** 2 for x in processing_times) / len(processing_times)
+            coef_var = (variance ** 0.5) / mean_t if mean_t > 0 else 1
+            if len(processing_times) >= 12 and coef_var < 0.45:
+                confidence = "High"
+            elif len(processing_times) >= 6 and coef_var < 0.75:
+                confidence = "Medium"
+
+        eta_text = (
+            f"ETA: {FormatUtils.format_time(eta_seconds)} | Elapsed: {FormatUtils.format_time(elapsed)}"
+            if avg_time > 0 or final else
+            f"ETA: - | Elapsed: {FormatUtils.format_time(elapsed)}"
+        )
+        self.app.root.after(0, lambda: self.eta_label.config(text=eta_text))
+
+        total_words = stats.get('total_words', 0)
+        files_per_hour = (current / elapsed * 3600) if elapsed > 0 else 0
+
+        durations = stats.get('audio_durations', [])
+        if durations and processing_times and sum(processing_times) > 0:
+            speed_ratio = sum(durations) / sum(processing_times)
+            speed_text = f"{speed_ratio:.2f}x real-time"
+        else:
+            speed_text = "-"
+
+        current_name = os.path.basename(current_file) if current_file else (self.current_file_name or "-")
+        short_name = current_name
+        if len(short_name) > 52:
+            short_name = "..." + short_name[-49:]
+        status_text = f"State: {self.batch_state} | {current}/{total} | Current: {short_name}"
+
+        eta_basis = "Estimated"
+        if eta_mode == "weighted-audio":
+            eta_basis = "Mixed"
+        elif eta_mode == "complete":
+            eta_basis = "Observed"
+
+        eta_panel_text = (
+            f"Elapsed: {FormatUtils.format_time(elapsed)} | "
+            f"ETA: {FormatUtils.format_time(eta_seconds) if (avg_time > 0 or final) else '-'} | "
+            f"Conf: {confidence} | Basis: {eta_basis}"
+        )
+
+        window = min(10, len(processing_times))
+        rolling_times = processing_times[-window:] if window > 0 else []
+        rolling_durations = durations[-window:] if window > 0 else []
+        rolling_wps = stats.get('file_words_per_second', [])[-window:] if window > 0 else []
+
+        rolling_files_per_hour = (3600.0 / (sum(rolling_times) / len(rolling_times))) if rolling_times else 0
+        rolling_words_per_sec = (sum(rolling_wps) / len(rolling_wps)) if rolling_wps else 0
+        if rolling_durations and rolling_times and sum(rolling_times) > 0:
+            rolling_speed = sum(rolling_durations) / sum(rolling_times)
+            rolling_speed_text = f"{rolling_speed:.2f}x real-time"
+        else:
+            rolling_speed_text = speed_text
+
+        throughput_text = (
+            f"Rolling: {rolling_files_per_hour:.1f} files/hr | "
+            f"{rolling_words_per_sec:.2f} w/s | {rolling_speed_text}"
+        )
+
+        failed = stats.get('failed', 0)
+        failure_rate = (failed / current * 100.0) if current > 0 else 0
+        reason_map = stats.get('failed_reasons', {})
+        top_reason = "-"
+        if reason_map:
+            reason_counts = {}
+            for reason in reason_map.values():
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            top_reason = max(reason_counts.items(), key=lambda kv: kv[1])[0]
+            if len(top_reason) > 45:
+                top_reason = top_reason[:42] + "..."
+
+        slow_count = 0
+        if processing_times:
+            sorted_times = sorted(processing_times)
+            mid = len(sorted_times) // 2
+            median = (sorted_times[mid] if len(sorted_times) % 2 == 1 else (sorted_times[mid - 1] + sorted_times[mid]) / 2.0)
+            if median > 0:
+                slow_count = len([t for t in processing_times if t > (2.0 * median)])
+
+        risk_text = f"Risk: fail {failed} ({failure_rate:.1f}%) | top: {top_reason} | slow: {slow_count}"
+
+        actual_word_sources = stats.get('actual_word_source_files', 0)
+        estimated_word_sources = stats.get('estimated_word_source_files', 0)
+        cache_text = "yes" if self.pre_scan_cache_used else "no"
+        estimate_text = (
+            f"Estimate: obs {actual_word_sources} | est {estimated_word_sources} | "
+            f"cache: {cache_text} | words: {total_words:,}"
+        )
+
+        self.app.root.after(0, lambda: self.metrics_current_file_label.config(text=status_text))
+        self.app.root.after(0, lambda: self.metrics_eta_label.config(text=eta_panel_text))
+        self.app.root.after(0, lambda: self.metrics_throughput_label.config(text=throughput_text))
+        self.app.root.after(0, lambda: self.metrics_risk_label.config(text=risk_text))
+        self.app.root.after(0, lambda: self.metrics_estimation_label.config(text=estimate_text))
     
     def cancel_batch(self):
         """Cancel batch processing."""
         if messagebox.askyesno("Cancel", "Cancel batch processing?"):
+            self.batch_state = "Canceling"
             self.app.batch_processor.cancel()
             self.cancel_btn.config(state="disabled")
     
@@ -494,6 +793,7 @@ class BatchTab:
         self.cancel_btn.config(state="disabled")
         self.current_progress.stop()
         self.status.set("Ready")
+        self.batch_state = "Idle"
     
     def log(self, message):
         """Add message to log."""
@@ -740,3 +1040,4 @@ class BatchTab:
             self._on_diarization_toggle()
         
         self.check_ready()
+        self._update_folder_open_buttons()

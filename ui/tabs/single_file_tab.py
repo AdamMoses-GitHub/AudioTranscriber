@@ -317,7 +317,8 @@ class SingleFileTab:
             options = {
                 'timestamps_enabled': self.timestamps_enabled.get(),
                 'timestamp_format': self.timestamp_format.get(),
-                'timestamp_interval': self.timestamp_interval.get()
+                'timestamp_interval': self.timestamp_interval.get(),
+                'diarization_fallback_to_plain': True
             }
             
             # Check if diarization is enabled

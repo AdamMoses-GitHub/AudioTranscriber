@@ -208,3 +208,4 @@ __marimo__/
 
 # Others
 /transcriber_config.json
+.batch_scan_cache.json

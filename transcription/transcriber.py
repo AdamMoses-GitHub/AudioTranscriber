@@ -223,10 +223,28 @@ class Transcriber:
             audio metadata, and speaker timeline.
         """
         logger.info(f"Starting transcription with diarization: {audio_file}")
+
+        fallback_to_plain = True if options is None else options.get('diarization_fallback_to_plain', True)
         
         # Step 1: Run diarization to get speaker timeline
         logger.info("Step 1/3: Running speaker diarization...")
-        speaker_timeline = diarizer.diarize(audio_file, num_speakers)
+        try:
+            speaker_timeline = diarizer.diarize(audio_file, num_speakers)
+        except Exception as e:
+            if not fallback_to_plain:
+                raise
+
+            logger.warning(
+                "Diarization failed for %s. Falling back to plain transcription. Error: %s",
+                audio_file,
+                e
+            )
+            result = self.transcribe_with_metadata(audio_file, engine, options, progress_callback=progress_callback)
+            result['speaker_timeline'] = []
+            result['num_speakers'] = 0
+            result['diarization_fallback'] = True
+            result['diarization_error'] = str(e)
+            return result
         
         # Step 2: Transcribe audio with timestamps (reuse existing code!)
         logger.info("Step 2/3: Running speech-to-text transcription...")
@@ -247,6 +265,7 @@ class Transcriber:
         result['text'] = labeled_text
         result['speaker_timeline'] = speaker_timeline
         result['num_speakers'] = len(set(label for _, _, label in speaker_timeline))
+        result['diarization_fallback'] = False
         
         logger.info(f"Diarization complete: {result['num_speakers']} speakers detected")
         return result
@@ -322,7 +341,7 @@ class Transcriber:
                     text_line = ' '.join(current_text)
                     if include_timestamps and current_start_time is not None:
                         timestamp_str = FormatUtils.format_timestamp(current_start_time, timestamp_format)
-                        output_lines.append(f"[{timestamp_str}] {current_speaker}: {text_line}")
+                        output_lines.append(f"{timestamp_str} {current_speaker}: {text_line}")
                     else:
                         output_lines.append(f"{current_speaker}: {text_line}")
                     current_text = []
@@ -336,7 +355,7 @@ class Transcriber:
                 if current_text:
                     text_line = ' '.join(current_text)
                     timestamp_str = FormatUtils.format_timestamp(current_start_time, timestamp_format)
-                    output_lines.append(f"[{timestamp_str}] {current_speaker}: {text_line}")
+                    output_lines.append(f"{timestamp_str} {current_speaker}: {text_line}")
                     current_text = []
                     current_start_time = segment_start
                     last_timestamp_time = segment_start
@@ -349,7 +368,7 @@ class Transcriber:
             text_line = ' '.join(current_text)
             if include_timestamps and current_start_time is not None:
                 timestamp_str = FormatUtils.format_timestamp(current_start_time, timestamp_format)
-                output_lines.append(f"[{timestamp_str}] {current_speaker}: {text_line}")
+                output_lines.append(f"{timestamp_str} {current_speaker}: {text_line}")
             else:
                 output_lines.append(f"{current_speaker}: {text_line}")
         

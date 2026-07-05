@@ -32,6 +32,7 @@ class MetadataExtractor:
             'bitrate': None,
             'channels': None,
             'sample_rate': None,
+            'duration_seconds': None,
             'codec': None,
             'title': None,
             'artist': None,
@@ -61,6 +62,7 @@ class MetadataExtractor:
                     metadata['channels'] = audio.channels
                     metadata['sample_rate'] = audio.frame_rate
                     metadata['bitrate'] = audio.frame_rate * audio.frame_width * 8 * audio.channels // 1000
+                    metadata['duration_seconds'] = len(audio) / 1000.0
                 except Exception as e:
                     logger.debug(f"Error extracting metadata with pydub: {e}")
             
@@ -70,6 +72,10 @@ class MetadataExtractor:
                     with wave.open(audio_file, 'rb') as wav:
                         metadata['channels'] = wav.getnchannels()
                         metadata['sample_rate'] = wav.getframerate()
+                        frame_rate = wav.getframerate()
+                        total_frames = wav.getnframes()
+                        if frame_rate and frame_rate > 0:
+                            metadata['duration_seconds'] = total_frames / frame_rate
                 except Exception as e:
                     logger.debug(f"Error extracting WAV metadata: {e}")
                     

@@ -253,8 +253,38 @@ Speaker diarization labels each segment of the transcript with who is speaking (
 - Diarization runs after transcription and requires additional processing time
 - CPU diarization is significantly slower; GPU is recommended
 - The pyannote model is downloaded the first time it's used (~1GB)
-- Speaker labels appear inline as `[SPEAKER_00]`, `[SPEAKER_01]`, etc.
+- Speaker labels appear inline as `SPEAKER_00:`, `SPEAKER_01:`, etc.
 - No CLI flag yet — diarization is GUI-only in the current release
+
+### Example Output
+
+**Diarization off, timestamps off**
+```text
+Hello everyone. Today we are reviewing the agenda.
+```
+
+**Diarization off, timestamps on**
+```text
+[00:00:00]
+Hello everyone.
+
+[00:01:00]
+Today we are reviewing the agenda.
+```
+
+**Diarization on, timestamps off**
+```text
+SPEAKER_00: Hello everyone. Today we are reviewing the agenda.
+
+SPEAKER_01: Great, let's start with the first item.
+```
+
+**Diarization on, timestamps on**
+```text
+[00:00:00] SPEAKER_00: Hello everyone.
+
+[00:01:00] SPEAKER_01: Great, let's start with the first item.
+```
 
 ## Configuration
 
