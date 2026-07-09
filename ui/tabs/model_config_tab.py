@@ -159,14 +159,22 @@ class ModelConfigTab:
                                    values=MODEL_SIZES, width=15, state="readonly")
         model_combo.grid(row=0, column=1, padx=(10, 0))
         model_combo.bind('<<ComboboxSelected>>', lambda e: self.on_config_change())
-        
+
+        self.active_model_label = ttk.Label(
+            selector_frame,
+            text=f"▶  {self.app.model_size.get().upper()}",
+            font=("Arial", 11, "bold"),
+            foreground="#1a7abf"
+        )
+        self.active_model_label.grid(row=0, column=2, padx=(15, 0), sticky="w")
+
         ttk.Button(selector_frame, text="Download Selected Model",
-                  command=self.download_selected).grid(row=0, column=2, padx=(20, 10))
+                  command=self.download_selected).grid(row=0, column=3, padx=(20, 10))
         ttk.Button(selector_frame, text="Download All Models",
-                  command=self.download_all).grid(row=0, column=3)
+                  command=self.download_all).grid(row=0, column=4)
         
         self.download_status_label = ttk.Label(selector_frame, text="", font=("Arial", 9), foreground="gray")
-        self.download_status_label.grid(row=1, column=0, columnspan=4, sticky="w", pady=(5, 0))
+        self.download_status_label.grid(row=1, column=0, columnspan=5, sticky="w", pady=(5, 0))
         
         # Model info
         info_frame = ttk.Frame(frame)
@@ -332,6 +340,8 @@ class ModelConfigTab:
     def update_model_info(self):
         """Update model information display."""
         model_size = self.app.model_size.get()
+        if hasattr(self, 'active_model_label'):
+            self.active_model_label.config(text=f"▶  {model_size.upper()}")
         specs = MODEL_SPECS.get(model_size, MODEL_SPECS["base"])
         
         whisper_dl, faster_whisper_dl = self.app.model_manager.check_model_downloaded(model_size)

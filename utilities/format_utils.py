@@ -316,6 +316,14 @@ class FormatUtils:
             diarization_enabled = diarization_metadata.get('enabled', False)
             lines.append(f"Diarization:       {'Enabled' if diarization_enabled else 'Disabled'}\n")
 
+            diarization_timestamp_mode = diarization_metadata.get('timestamp_mode')
+            if diarization_enabled and diarization_timestamp_mode:
+                mode_label = {
+                    'speaker_turns': 'Speaker turns only',
+                    'interval': 'Interval markers'
+                }.get(diarization_timestamp_mode, diarization_timestamp_mode)
+                lines.append(f"Diarization Timestamps: {mode_label}\n")
+
             requested_speakers = diarization_metadata.get('requested_speakers')
             if requested_speakers is None:
                 lines.append("Requested Speakers: Auto\n")

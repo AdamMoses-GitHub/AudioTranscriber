@@ -1,10 +1,16 @@
 """Main application window for Audio Transcriber."""
 import tkinter as tk
 from tkinter import ttk
+import time
+import traceback
 from config import Environment, ConfigManager
+from config.logger import get_logger
 from models import ModelManager
 from transcription import Transcriber, BatchProcessor, Diarizer
 from ui.tabs import SingleFileTab, BatchTab, ModelConfigTab, AboutTab
+
+
+logger = get_logger(__name__)
 
 
 class AudioTranscriberApp:
@@ -41,12 +47,16 @@ class AudioTranscriberApp:
         
         # Create UI
         self._create_ui()
+
+        # Diagnostics for unexpected app shutdown
+        self.last_batch_complete_at = None
         
         # Load configuration
         self.load_config()
         
         # Setup window close handler
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.root.protocol("WM_DELETE_WINDOW", lambda: self.on_closing(source="wm_delete_window"))
+        self.root.bind("<Destroy>", self._on_root_destroy_event, add="+")
     
     def _create_ui(self):
         """Create main UI."""
@@ -67,7 +77,7 @@ class AudioTranscriberApp:
         footer_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 5))
         footer_frame.columnconfigure(0, weight=1)
         
-        quit_btn = ttk.Button(footer_frame, text="Quit", command=self.on_closing)
+        quit_btn = ttk.Button(footer_frame, text="Quit", command=lambda: self.on_closing(source="quit_button"))
         quit_btn.grid(row=0, column=1, sticky="e")
         
         # Create tabs
@@ -135,11 +145,14 @@ class AudioTranscriberApp:
                 # Single file tab
                 single_config = {
                     'file_path': config.get('file_path'),
-                    'output_path': config.get('output_path'),
                     'detect_date': config.get('detect_date', True),
                     'chars_per_line': config.get('chars_per_line', 80),
+                    'timestamps_enabled': config.get('timestamps_enabled', False),
+                    'timestamp_format': config.get('timestamp_format', 'HH:MM:SS'),
+                    'timestamp_interval': config.get('timestamp_interval', 30),
                     'diarization_enabled': config.get('diarization_enabled', False),
-                    'num_speakers': config.get('diarization_num_speakers', 0)
+                    'num_speakers': config.get('diarization_num_speakers', 0),
+                    'diarization_timestamp_mode': config.get('diarization_timestamp_mode', 'speaker_turns')
                 }
                 self.single_file_tab.set_config(single_config)
                 
@@ -153,14 +166,41 @@ class AudioTranscriberApp:
                     'create_summary': config.get('batch_create_summary', True),
                     'preserve_structure': config.get('batch_preserve_structure', False),
                     'recursive': config.get('batch_recursive', False),
+                    'timestamps_enabled': config.get('batch_timestamps_enabled', False),
+                    'timestamp_format': config.get('batch_timestamp_format', 'HH:MM:SS'),
+                    'timestamp_interval': config.get('batch_timestamp_interval', 30),
                     'diarization_enabled': config.get('batch_diarization_enabled', False),
-                    'num_speakers': config.get('batch_diarization_num_speakers', 0)
+                    'num_speakers': config.get('batch_diarization_num_speakers', 0),
+                    'diarization_timestamp_mode': config.get('batch_diarization_timestamp_mode', 'speaker_turns')
                 }
                 self.batch_tab.set_config(batch_config)
         except Exception:
             pass
     
-    def on_closing(self):
+    def mark_batch_completed(self):
+        """Track when batch processing completes for shutdown diagnostics."""
+        self.last_batch_complete_at = time.time()
+        logger.info("Batch completed marker set at %.3f", self.last_batch_complete_at)
+
+    def _on_root_destroy_event(self, event):
+        """Log destruction of the root window for close-path diagnostics."""
+        if event.widget is self.root:
+            logger.warning("Root window <Destroy> event fired")
+
+    def on_closing(self, source="unknown"):
         """Handle window closing."""
+        now = time.time()
+        since_batch = None
+        if self.last_batch_complete_at is not None:
+            since_batch = now - self.last_batch_complete_at
+
+        stack_text = "".join(traceback.format_stack(limit=12))
+        logger.warning(
+            "on_closing invoked | source=%s | seconds_since_batch_complete=%s\nStack:\n%s",
+            source,
+            f"{since_batch:.3f}" if since_batch is not None else "n/a",
+            stack_text
+        )
+
         self.save_config()
         self.root.destroy()

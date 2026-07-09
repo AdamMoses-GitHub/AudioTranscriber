@@ -43,6 +43,7 @@ class SingleFileTab:
         # Diarization variables
         self.diarization_enabled = tk.BooleanVar(value=False)
         self.num_speakers = tk.IntVar(value=0)  # 0 = auto-detect
+        self.diarization_timestamp_mode = tk.StringVar(value='speaker_turns')
         
         # Create UI
         self._create_ui()
@@ -185,6 +186,19 @@ class SingleFileTab:
             
             ttk.Button(diar_controls, text="?", width=3, command=self.show_diarization_help).grid(
                 row=0, column=4, padx=(5, 0))
+
+            ttk.Label(diar_controls, text="Diarization timestamp mode:").grid(
+                row=1, column=0, sticky="w", pady=(8, 0)
+            )
+            self.diarization_timestamp_combo = ttk.Combobox(
+                diar_controls,
+                textvariable=self.diarization_timestamp_mode,
+                values=['speaker_turns', 'interval'],
+                state='readonly',
+                width=18
+            )
+            self.diarization_timestamp_combo.grid(row=1, column=1, columnspan=2, sticky="w", padx=(20, 0), pady=(8, 0))
+            self.diarization_timestamp_combo.bind('<<ComboboxSelected>>', lambda e: self.app.save_config())
             
             # HF Token warning if not set
             if not self.app.hf_token.get():
@@ -318,6 +332,7 @@ class SingleFileTab:
                 'timestamps_enabled': self.timestamps_enabled.get(),
                 'timestamp_format': self.timestamp_format.get(),
                 'timestamp_interval': self.timestamp_interval.get(),
+                'diarization_timestamp_mode': self.diarization_timestamp_mode.get(),
                 'diarization_fallback_to_plain': True
             }
             
@@ -400,7 +415,8 @@ class SingleFileTab:
                 'requested_speakers': self.num_speakers.get() if self.num_speakers.get() > 0 else None,
                 'detected_speakers': result.get('num_speakers') if isinstance(result, dict) else None,
                 'model': 'pyannote/speaker-diarization-3.1' if self.diarization_enabled.get() and self.app.environment.pyannote_available else None,
-                'token_configured': bool(self.app.hf_token.get().strip()) if self.diarization_enabled.get() else None
+                'token_configured': bool(self.app.hf_token.get().strip()) if self.diarization_enabled.get() else None,
+                'timestamp_mode': self.diarization_timestamp_mode.get()
             }
             
             metadata_header = FormatUtils.build_transcript_metadata(
@@ -480,11 +496,8 @@ class SingleFileTab:
             else:
                 eta_str = "calculating..."
             
-            # Format speed
-            speed_str = f"{speed_factor:.1f}x" if speed_factor > 0 else "..."
-            
             # Build status message
-            status_msg = f"Transcribing: {percent}% ({current_mins}:{current_secs:02d}) | Speed: {speed_str} realtime | ETA: {eta_str}"
+            status_msg = f"Transcribing: {percent}% ({current_mins}:{current_secs:02d}) | ETA: {eta_str}"
             self.status.set(status_msg)
         
         self.app.root.after(0, update_ui)
@@ -532,6 +545,9 @@ class SingleFileTab:
         if hasattr(self, 'speakers_spinbox'):
             state = "normal" if self.diarization_enabled.get() else "disabled"
             self.speakers_spinbox.config(state=state)
+        if hasattr(self, 'diarization_timestamp_combo'):
+            mode_state = "readonly" if self.diarization_enabled.get() else "disabled"
+            self.diarization_timestamp_combo.config(state=mode_state)
             self.app.save_config()
     
     def show_date_detection_help(self):
@@ -623,7 +639,8 @@ class SingleFileTab:
             'timestamp_format': self.timestamp_format.get(),
             'timestamp_interval': self.timestamp_interval.get(),
             'diarization_enabled': self.diarization_enabled.get(),
-            'diarization_num_speakers': self.num_speakers.get()
+            'diarization_num_speakers': self.num_speakers.get(),
+            'diarization_timestamp_mode': self.diarization_timestamp_mode.get()
         }
     
     def set_config(self, config):
@@ -654,6 +671,9 @@ class SingleFileTab:
         
         if 'num_speakers' in config:
             self.num_speakers.set(config['num_speakers'])
+
+        if 'diarization_timestamp_mode' in config:
+            self.diarization_timestamp_mode.set(config['diarization_timestamp_mode'])
         
         # Update timestamp control states
         self._on_timestamp_toggle()

@@ -1,14 +1,24 @@
 """Batch processor for transcribing multiple audio files."""
-import hashlib
-import json
 import os
 import time
+import hashlib
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Callable, Optional, List
 from utilities.file_utils import FileUtils
 from utilities.format_utils import FormatUtils
 from utilities.date_parser import DateParser
 from utilities.audio_utils import AudioUtils
 from config.constants import STATUS_SKIPPED, BYTES_PER_MB
+from config.environment import WAVE_AVAILABLE, MUTAGEN_AVAILABLE
+
+if WAVE_AVAILABLE:
+    import wave
+
+try:
+    from mutagen import File as MutagenFile
+except Exception:
+    MutagenFile = None
 
 
 class BatchProcessor:
@@ -48,168 +58,82 @@ class BatchProcessor:
         self.estimated_files_remaining_to_transcribe = 0
         self.actual_word_source_files = 0
         self.estimated_word_source_files = 0
+        self.pre_scan_summary = {}
         self.start_time = None
         self.failed_files_with_reasons = {}  # Dict of filename -> reason for failure
+        self.completed_transcribe_files = 0
+        self.completed_transcribe_audio_seconds = 0.0
+        self.completed_transcribe_processing_seconds = 0.0
+        self.file_speed_ratios = []
+        self.current_file_path = None
+        self.current_file_step = "idle"
+        self.current_file_started_at = None
+        self.current_file_audio_duration_seconds = 0.0
 
-        # Pre-scan cache (persistent on disk)
-        self._cache_version = 1
-        self._scan_cache_file = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            ".batch_scan_cache.json"
-        )
-        self._scan_cache = self._load_scan_cache()
+    def _set_current_file_state(self, audio_file=None, step=None, start_now=False, audio_duration_seconds=None):
+        """Track current-file status for live UI metrics."""
+        if audio_file is not None:
+            self.current_file_path = audio_file
+        if step is not None:
+            self.current_file_step = step
+        if start_now:
+            self.current_file_started_at = time.time()
+        if audio_duration_seconds is not None:
+            self.current_file_audio_duration_seconds = max(0.0, float(audio_duration_seconds or 0.0))
 
-    def _load_scan_cache(self):
-        """Load pre-scan cache from disk."""
-        default_cache = {
-            'version': self._cache_version,
-            'plans': {},
-            'audio_metadata': {},
-            'transcript_words': {}
-        }
+    def _quick_content_fingerprint(self, file_path, chunk_size=128 * 1024):
+        """Create a fast fingerprint from file size + first/last chunk."""
+        file_size = os.path.getsize(file_path)
+        hasher = hashlib.sha1()
 
-        try:
-            if not os.path.exists(self._scan_cache_file):
-                return default_cache
+        with open(file_path, 'rb') as f:
+            if file_size <= (2 * chunk_size):
+                hasher.update(f.read())
+            else:
+                first_chunk = f.read(chunk_size)
+                f.seek(max(file_size - chunk_size, 0), os.SEEK_SET)
+                last_chunk = f.read(chunk_size)
+                hasher.update(first_chunk)
+                hasher.update(last_chunk)
 
-            with open(self._scan_cache_file, 'r', encoding='utf-8') as f:
-                raw = json.load(f)
+        return f"{file_size}:{hasher.hexdigest()}"
 
-            if not isinstance(raw, dict) or raw.get('version') != self._cache_version:
-                return default_cache
+    def _full_file_hash(self, file_path, chunk_size=1024 * 1024):
+        """Compute full-file hash for precise duplicate verification."""
+        hasher = hashlib.sha1()
+        with open(file_path, 'rb') as f:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                hasher.update(chunk)
+        return hasher.hexdigest()
 
-            default_cache['plans'] = raw.get('plans', {}) if isinstance(raw.get('plans', {}), dict) else {}
-            default_cache['audio_metadata'] = raw.get('audio_metadata', {}) if isinstance(raw.get('audio_metadata', {}), dict) else {}
-            default_cache['transcript_words'] = raw.get('transcript_words', {}) if isinstance(raw.get('transcript_words', {}), dict) else {}
-            return default_cache
-        except Exception:
-            return default_cache
+    def _probe_audio_duration_seconds(self, audio_file):
+        """Probe duration quickly from metadata/header without full decode."""
+        file_ext = os.path.splitext(audio_file)[1].lower()
 
-    def _save_scan_cache(self):
-        """Persist pre-scan cache to disk."""
-        try:
-            payload = {
-                'version': self._cache_version,
-                'plans': self._scan_cache.get('plans', {}),
-                'audio_metadata': self._scan_cache.get('audio_metadata', {}),
-                'transcript_words': self._scan_cache.get('transcript_words', {})
-            }
-            with open(self._scan_cache_file, 'w', encoding='utf-8') as f:
-                json.dump(payload, f, indent=2)
-        except Exception:
-            # Cache is best-effort only.
-            pass
+        if MutagenFile is not None and MUTAGEN_AVAILABLE:
+            try:
+                audio_obj = MutagenFile(audio_file)
+                if audio_obj is not None and getattr(audio_obj, 'info', None):
+                    length = float(getattr(audio_obj.info, 'length', 0.0) or 0.0)
+                    if length > 0:
+                        return length
+            except Exception:
+                pass
 
-    def _normalize_path(self, path):
-        """Normalize path for stable cache keys on Windows/macOS/Linux."""
-        return os.path.normcase(os.path.abspath(path))
+        if file_ext == '.wav' and WAVE_AVAILABLE:
+            try:
+                with wave.open(audio_file, 'rb') as wav_file:
+                    frame_rate = wav_file.getframerate()
+                    total_frames = wav_file.getnframes()
+                    if frame_rate and frame_rate > 0:
+                        return float(total_frames / frame_rate)
+            except Exception:
+                pass
 
-    def _get_file_signature(self, path):
-        """Return lightweight file signature (exists, size, mtime_ns)."""
-        try:
-            st = os.stat(path)
-            return {
-                'exists': True,
-                'size': int(st.st_size),
-                'mtime_ns': int(st.st_mtime_ns)
-            }
-        except Exception:
-            return {
-                'exists': False,
-                'size': 0,
-                'mtime_ns': 0
-            }
-
-    def _build_plan_cache_key(self, input_folder, output_folder, options):
-        """Build cache key for a batch pre-scan plan."""
-        key_data = {
-            'input_folder': self._normalize_path(input_folder),
-            'output_folder': self._normalize_path(output_folder),
-            'recursive': bool(options.get('recursive', False)),
-            'preserve_structure': bool(options.get('preserve_structure', False)),
-            'skip_existing': bool(options.get('skip_existing', True)),
-            'estimated_wpm': int(options.get('estimated_wpm', 150)),
-            'estimated_words_per_mb': int(options.get('estimated_words_per_mb', 1200)),
-            'estimated_seconds_per_mb': int(options.get('estimated_seconds_per_mb', 64))
-        }
-        return hashlib.sha256(json.dumps(key_data, sort_keys=True).encode('utf-8')).hexdigest()
-
-    def _build_plan_fingerprint(self, audio_files, input_folder, output_folder, options):
-        """Build fast fingerprint from current audio/transcript file states."""
-        file_entries = []
-        for audio_file in audio_files:
-            output_file = self._build_output_file_path(audio_file, input_folder, output_folder, options)
-            file_entries.append({
-                'audio_file': self._normalize_path(audio_file),
-                'audio_sig': self._get_file_signature(audio_file),
-                'output_file': self._normalize_path(output_file),
-                'output_exists': os.path.exists(output_file)
-            })
-
-        fingerprint_source = {
-            'files': file_entries,
-            'skip_existing': bool(options.get('skip_existing', True)),
-            'estimated_wpm': int(options.get('estimated_wpm', 150)),
-            'estimated_words_per_mb': int(options.get('estimated_words_per_mb', 1200)),
-            'estimated_seconds_per_mb': int(options.get('estimated_seconds_per_mb', 64))
-        }
-        return hashlib.sha256(json.dumps(fingerprint_source, sort_keys=True).encode('utf-8')).hexdigest()
-
-    def _get_cached_audio_duration(self, audio_file):
-        """Get cached audio duration when file signature matches."""
-        key = self._normalize_path(audio_file)
-        cache_entry = self._scan_cache.get('audio_metadata', {}).get(key)
-        if not cache_entry:
-            return None
-
-        sig = self._get_file_signature(audio_file)
-        if not sig['exists']:
-            return None
-
-        if cache_entry.get('size') == sig['size'] and cache_entry.get('mtime_ns') == sig['mtime_ns']:
-            return float(cache_entry.get('duration_seconds') or 0.0)
-        return None
-
-    def _set_cached_audio_duration(self, audio_file, duration_seconds):
-        """Store audio duration with file signature."""
-        key = self._normalize_path(audio_file)
-        sig = self._get_file_signature(audio_file)
-        if not sig['exists']:
-            return
-
-        self._scan_cache.setdefault('audio_metadata', {})[key] = {
-            'size': sig['size'],
-            'mtime_ns': sig['mtime_ns'],
-            'duration_seconds': float(duration_seconds or 0.0)
-        }
-
-    def _get_cached_transcript_words(self, transcript_file):
-        """Get cached transcript word count when file signature matches."""
-        key = self._normalize_path(transcript_file)
-        cache_entry = self._scan_cache.get('transcript_words', {}).get(key)
-        if not cache_entry:
-            return None
-
-        sig = self._get_file_signature(transcript_file)
-        if not sig['exists']:
-            return None
-
-        if cache_entry.get('size') == sig['size'] and cache_entry.get('mtime_ns') == sig['mtime_ns']:
-            return int(cache_entry.get('word_count') or 0)
-        return None
-
-    def _set_cached_transcript_words(self, transcript_file, word_count):
-        """Store transcript word count with file signature."""
-        key = self._normalize_path(transcript_file)
-        sig = self._get_file_signature(transcript_file)
-        if not sig['exists']:
-            return
-
-        self._scan_cache.setdefault('transcript_words', {})[key] = {
-            'size': sig['size'],
-            'mtime_ns': sig['mtime_ns'],
-            'word_count': int(word_count or 0)
-        }
+        return 0.0
 
     def _build_output_file_path(self, audio_file, input_folder, output_folder, options):
         """Build output transcript path for a given audio file."""
@@ -222,15 +146,9 @@ class BatchProcessor:
 
     def _count_words_in_existing_transcript(self, transcript_file):
         """Count words in an existing transcript file, if readable."""
-        cached = self._get_cached_transcript_words(transcript_file)
-        if cached is not None:
-            return cached
-
         try:
             with open(transcript_file, 'r', encoding='utf-8') as f:
-                count = FormatUtils.count_words(f.read())
-                self._set_cached_transcript_words(transcript_file, count)
-                return count
+                return FormatUtils.count_words(f.read())
         except Exception:
             return None
 
@@ -240,52 +158,120 @@ class BatchProcessor:
         estimated_wpm = options.get('estimated_wpm', 150)
         estimated_words_per_mb = options.get('estimated_words_per_mb', 1200)
         estimated_seconds_per_mb = options.get('estimated_seconds_per_mb', 64)
+        skip_duplicates = options.get('skip_duplicates', True)
 
-        plan_key = self._build_plan_cache_key(input_folder, output_folder, options)
-        plan_fingerprint = self._build_plan_fingerprint(audio_files, input_folder, output_folder, options)
+        if log_callback:
+            log_callback(f"🔎 Pre-scan started for {len(audio_files)} file(s)")
 
-        plan_cache = self._scan_cache.get('plans', {}).get(plan_key)
-        if plan_cache and plan_cache.get('fingerprint') == plan_fingerprint:
-            if log_callback:
-                log_callback(f"⚡ Pre-scan cache hit for {len(audio_files)} file(s)")
-            cached = plan_cache.get('pre_scan_data', {'files': [], 'total_files': 0}).copy()
-            cached['cache_used'] = True
-            cached['cache_cached_at'] = plan_cache.get('cached_at')
-            return cached
+        # Build output-path map early to detect collisions before processing.
+        output_to_audio_files = defaultdict(list)
+        for audio_file in audio_files:
+            output_file = self._build_output_file_path(audio_file, input_folder, output_folder, options)
+            output_to_audio_files[os.path.normcase(os.path.abspath(output_file))].append(audio_file)
+
+        output_collisions = []
+        for norm_output, sources in output_to_audio_files.items():
+            if len(sources) > 1:
+                output_collisions.append({
+                    'output_file': os.path.abspath(norm_output),
+                    'audio_files': sorted(sources)
+                })
+
+        # Fast duplicate-content scan: size -> quick fingerprint -> full hash for ties.
+        duplicate_groups = []
+        duplicate_skip_set = set()
+        files_by_size = defaultdict(list)
+        for audio_file in audio_files:
+            try:
+                files_by_size[os.path.getsize(audio_file)].append(audio_file)
+            except Exception:
+                continue
+
+        candidate_groups = [group for group in files_by_size.values() if len(group) > 1]
+        for size_group in candidate_groups:
+            quick_groups = defaultdict(list)
+            for audio_file in size_group:
+                try:
+                    quick_fp = self._quick_content_fingerprint(audio_file)
+                    quick_groups[quick_fp].append(audio_file)
+                except Exception:
+                    continue
+
+            for quick_group in quick_groups.values():
+                if len(quick_group) <= 1:
+                    continue
+
+                hash_groups = defaultdict(list)
+                for audio_file in quick_group:
+                    try:
+                        full_hash = self._full_file_hash(audio_file)
+                        hash_groups[full_hash].append(audio_file)
+                    except Exception:
+                        continue
+
+                for exact_group in hash_groups.values():
+                    if len(exact_group) <= 1:
+                        continue
+                    sorted_group = sorted(exact_group)
+                    duplicate_groups.append({'audio_files': sorted_group})
+                    if skip_duplicates:
+                        duplicate_skip_set.update(sorted_group[1:])
 
         files = []
         estimated_total_audio_seconds = 0.0
         estimated_total_words = 0
         estimated_files_to_transcribe = 0
 
-        if log_callback:
-            log_callback(f"🔎 Fast pre-scan started for {len(audio_files)} file(s) (size-first heuristic)")
+        file_sizes_mb = {}
+        duration_by_file = {}
+        for audio_file in audio_files:
+            try:
+                file_sizes_mb[audio_file] = os.path.getsize(audio_file) / BYTES_PER_MB
+            except Exception:
+                file_sizes_mb[audio_file] = 0.0
+
+        # Probe durations concurrently to keep pre-scan fast on large batches.
+        max_workers = min(8, max(1, os.cpu_count() or 4))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {executor.submit(self._probe_audio_duration_seconds, audio_file): audio_file for audio_file in audio_files}
+            for future in as_completed(future_map):
+                audio_file = future_map[future]
+                duration = 0.0
+                try:
+                    duration = float(future.result() or 0.0)
+                except Exception:
+                    duration = 0.0
+
+                if duration <= 0:
+                    duration = float(file_sizes_mb.get(audio_file, 0.0) * estimated_seconds_per_mb)
+                duration_by_file[audio_file] = duration
 
         for audio_file in audio_files:
             output_file = self._build_output_file_path(audio_file, input_folder, output_folder, options)
-            will_skip = options.get('skip_existing', True) and os.path.exists(output_file)
+            skip_existing = options.get('skip_existing', True) and os.path.exists(output_file)
+            skip_duplicate = audio_file in duplicate_skip_set
+            will_skip = skip_existing or skip_duplicate
 
-            file_size_mb = os.path.getsize(audio_file) / BYTES_PER_MB
-            duration_seconds = 0.0
-
-            # Performance-first: do not decode audio in pre-scan.
-            # Use cached duration when available, otherwise estimate from file size.
-            cached_duration = self._get_cached_audio_duration(audio_file)
-            if cached_duration is not None and cached_duration > 0:
-                duration_seconds = cached_duration
-            else:
-                duration_seconds = float(file_size_mb * estimated_seconds_per_mb)
-
-            transcript_word_count = None
+            file_size_mb = file_sizes_mb.get(audio_file, 0.0)
+            duration_seconds = duration_by_file.get(audio_file, 0.0)
             if duration_seconds > 0:
                 estimated_words = int((duration_seconds / 60.0) * estimated_wpm)
             else:
                 estimated_words = int(file_size_mb * estimated_words_per_mb)
 
+            skip_reason = None
+            if skip_existing:
+                skip_reason = 'existing_transcript'
+            elif skip_duplicate:
+                skip_reason = 'duplicate_content'
+
             files.append({
                 'audio_file': audio_file,
                 'output_file': output_file,
                 'will_skip': will_skip,
+                'will_skip_existing': skip_existing,
+                'will_skip_duplicate': skip_duplicate,
+                'skip_reason': skip_reason,
                 'file_size_mb': file_size_mb,
                 'estimated_duration_seconds': duration_seconds,
                 'estimated_words': estimated_words,
@@ -304,24 +290,38 @@ class BatchProcessor:
             'estimated_total_words': estimated_total_words,
             'estimated_total_files_to_transcribe': estimated_files_to_transcribe,
             'estimated_total_files_to_skip': len(files) - estimated_files_to_transcribe,
+            'existing_transcript_skips': sum(1 for f in files if f.get('will_skip_existing')),
+            'duplicate_content_skips': sum(1 for f in files if f.get('will_skip_duplicate')),
+            'duplicate_content_groups': duplicate_groups,
+            'output_path_collisions': output_collisions,
             'cache_used': False,
             'cache_cached_at': None
         }
 
+        self.pre_scan_summary = {
+            'existing_transcript_skips': pre_scan_data['existing_transcript_skips'],
+            'duplicate_content_skips': pre_scan_data['duplicate_content_skips'],
+            'duplicate_content_groups': pre_scan_data['duplicate_content_groups'],
+            'output_path_collisions': pre_scan_data['output_path_collisions']
+        }
+
         if log_callback:
+            if pre_scan_data['duplicate_content_groups']:
+                log_callback(
+                    f"🧬 Duplicate-content groups found: {len(pre_scan_data['duplicate_content_groups'])} "
+                    f"({pre_scan_data['duplicate_content_skips']} file(s) marked to skip)"
+                )
+            if pre_scan_data['output_path_collisions']:
+                log_callback(
+                    f"⚠️ Output filename collisions: {len(pre_scan_data['output_path_collisions'])}"
+                )
+
             log_callback(
                 "📈 Pre-scan complete: "
                 f"{pre_scan_data['estimated_total_files_to_transcribe']} to transcribe, "
                 f"{pre_scan_data['estimated_total_files_to_skip']} skipped, "
                 f"~{FormatUtils.format_time(pre_scan_data['estimated_total_audio_seconds'])} audio"
             )
-
-        self._scan_cache.setdefault('plans', {})[plan_key] = {
-            'fingerprint': plan_fingerprint,
-            'pre_scan_data': pre_scan_data,
-            'cached_at': int(time.time())
-        }
-        self._save_scan_cache()
 
         return pre_scan_data
     
@@ -365,6 +365,15 @@ class BatchProcessor:
         self.estimated_files_remaining_to_transcribe = 0
         self.actual_word_source_files = 0
         self.estimated_word_source_files = 0
+        self.pre_scan_summary = {}
+        self.completed_transcribe_files = 0
+        self.completed_transcribe_audio_seconds = 0.0
+        self.completed_transcribe_processing_seconds = 0.0
+        self.file_speed_ratios = []
+        self.current_file_path = None
+        self.current_file_step = "idle"
+        self.current_file_started_at = None
+        self.current_file_audio_duration_seconds = 0.0
         
         # Use pre-scan data if provided; otherwise compute it now.
         if pre_scan_data is None:
@@ -378,6 +387,12 @@ class BatchProcessor:
         self.estimated_remaining_words = self.estimated_total_words
         self.estimated_total_files_to_transcribe = pre_scan_data.get('estimated_total_files_to_transcribe', 0)
         self.estimated_files_remaining_to_transcribe = self.estimated_total_files_to_transcribe
+        self.pre_scan_summary = {
+            'existing_transcript_skips': pre_scan_data.get('existing_transcript_skips', 0),
+            'duplicate_content_skips': pre_scan_data.get('duplicate_content_skips', 0),
+            'duplicate_content_groups': pre_scan_data.get('duplicate_content_groups', []),
+            'output_path_collisions': pre_scan_data.get('output_path_collisions', [])
+        }
         
         if log_callback:
             log_callback(f"Found {self.total_files} audio files to process")
@@ -390,6 +405,11 @@ class BatchProcessor:
                 break
 
             audio_file = file_plan['audio_file']
+            self._set_current_file_state(
+                audio_file=audio_file,
+                step='queued',
+                audio_duration_seconds=file_plan.get('estimated_duration_seconds', 0)
+            )
 
             if progress_callback:
                 progress_callback(i, self.total_files, audio_file)
@@ -406,7 +426,18 @@ class BatchProcessor:
                 'status': status,
                 'words': result.get('words', 0),
                 'process_time': result.get('process_time', 0),
-                'words_per_second': result.get('words_per_second')
+                'words_per_second': result.get('words_per_second'),
+                'duration': result.get('duration', file_plan.get('estimated_duration_seconds', 0) if file_plan else 0),
+                'file_size_mb': file_plan.get('file_size_mb'),
+                'estimated_duration_seconds': file_plan.get('estimated_duration_seconds'),
+                'estimated_words': file_plan.get('estimated_words'),
+                'batch_index': i + 1,
+                'batch_total': self.total_files,
+                'processed_files': self.processed_files,
+                'successful_files': self.successful_files,
+                'failed_files': self.failed_files,
+                'skipped_files': self.skipped_files,
+                'total_words': self.total_words
             }
             
             if status in ('success', 'skipped'):
@@ -416,6 +447,16 @@ class BatchProcessor:
 
             # Consume remaining estimated work for non-skipped files once completed.
             if not file_plan.get('will_skip', False):
+                self.completed_transcribe_files += 1
+                completed_duration = float(result.get('duration', 0) or 0)
+                if completed_duration <= 0:
+                    completed_duration = float(file_plan.get('estimated_duration_seconds', 0) or 0)
+                self.completed_transcribe_audio_seconds += max(0.0, completed_duration)
+
+                result_process_time = float(result.get('process_time', 0) or 0)
+                if result_process_time > 0:
+                    self.completed_transcribe_processing_seconds += result_process_time
+
                 self.estimated_remaining_audio_seconds = max(
                     0,
                     self.estimated_remaining_audio_seconds - file_plan.get('estimated_duration_seconds', 0)
@@ -429,12 +470,15 @@ class BatchProcessor:
                     self.estimated_files_remaining_to_transcribe - 1
                 )
 
+            self._set_current_file_state(step=status)
+
             self.processed_files = i + 1
 
             if progress_callback:
                 progress_callback(self.processed_files, self.total_files, audio_file)
         
         total_time = time.time() - self.start_time
+        self._set_current_file_state(step='done')
         
         # Create summary if requested
         if options.get('create_summary', True) and not self.cancel_requested:
@@ -476,6 +520,7 @@ class BatchProcessor:
             log_callback(f"[{display_index}/{self.total_files}] Processing: {file_name}")
         
         start_time = time.time()
+        self._set_current_file_state(audio_file=audio_file, step='preparing', start_now=True)
         
         try:
             # Determine output path
@@ -483,34 +528,33 @@ class BatchProcessor:
             
             # Skip if exists
             if options.get('skip_existing', True) and os.path.exists(output_file):
+                self._set_current_file_state(step='skipped')
                 if log_callback:
                     log_callback(f"{STATUS_SKIPPED} Skipped (already exists): {os.path.basename(output_file)}")
                 self.skipped_files += 1
 
-                # If transcript already exists, use measured word count from pre-scan when available.
-                skip_words = 0
-                if file_plan is not None:
-                    existing_words = file_plan.get('existing_transcript_words')
-                    estimated_words = file_plan.get('estimated_words', 0)
-                    skip_words = existing_words if existing_words is not None else estimated_words
+                return {
+                    'status': 'skipped',
+                    'words': 0,
+                    'process_time': 0,
+                    'words_per_second': None,
+                    'duration': file_plan.get('estimated_duration_seconds', 0) if file_plan is not None else 0
+                }
 
-                    est_duration = file_plan.get('estimated_duration_seconds', 0)
-                    if est_duration > 0:
-                        self.audio_durations.append(est_duration)
-
-                if skip_words and skip_words > 0:
-                    self.word_counts.append(int(skip_words))
-                    self.total_words += int(skip_words)
-                    if file_plan is not None and file_plan.get('existing_transcript_words') is not None:
-                        self.actual_word_source_files += 1
-                    else:
-                        self.estimated_word_source_files += 1
+            # Skip known duplicate-content files from pre-scan.
+            if file_plan is not None and file_plan.get('will_skip_duplicate', False):
+                self._set_current_file_state(step='skipped')
+                if log_callback:
+                    log_callback(f"{STATUS_SKIPPED} Skipped duplicate content: {file_name}")
+                self.skipped_files += 1
+                est_duration = float(file_plan.get('estimated_duration_seconds', 0) or 0)
 
                 return {
                     'status': 'skipped',
-                    'words': int(skip_words) if skip_words else 0,
+                    'words': 0,
                     'process_time': 0,
-                    'words_per_second': None
+                    'words_per_second': None,
+                    'duration': est_duration
                 }
             
             # Get file size
@@ -518,6 +562,7 @@ class BatchProcessor:
             
             # Transcribe (with or without diarization)
             FileUtils.ensure_directory(output_file)
+            self._set_current_file_state(step='transcribing')
             
             # Check if diarization is enabled
             if options.get('diarization_enabled', False) and options.get('diarizer'):
@@ -544,6 +589,7 @@ class BatchProcessor:
             
             # Format text if requested
             chars_per_line = options.get('chars_per_line', 80)
+            self._set_current_file_state(step='formatting', audio_duration_seconds=duration if duration and duration > 0 else self.current_file_audio_duration_seconds)
             if chars_per_line > 0:
                 formatted_text = FormatUtils.format_text_with_line_breaks(text, chars_per_line)
             else:
@@ -570,6 +616,7 @@ class BatchProcessor:
             self.transcribed_files += 1
             
             # Save with comprehensive metadata using centralized formatter
+            self._set_current_file_state(step='writing', audio_duration_seconds=duration if duration and duration > 0 else self.current_file_audio_duration_seconds)
             with open(output_file, 'w', encoding='utf-8') as f:
                 # Build metadata header using centralized function
                 file_size_mb = os.path.getsize(audio_file) / BYTES_PER_MB
@@ -612,15 +659,19 @@ class BatchProcessor:
             
             if log_callback:
                 log_callback(f"✅ Success ({FormatUtils.format_time(process_time)}): {os.path.basename(output_file)}")
+            self._set_current_file_state(step='complete', audio_duration_seconds=duration if duration and duration > 0 else self.current_file_audio_duration_seconds)
 
             words_per_second = (word_count / process_time) if process_time > 0 else 0
             self.file_words_per_second.append(words_per_second)
+            if process_time > 0 and duration and duration > 0:
+                self.file_speed_ratios.append(float(duration) / float(process_time))
 
             return {
                 'status': 'success',
                 'words': word_count,
                 'process_time': process_time,
-                'words_per_second': words_per_second
+                'words_per_second': words_per_second,
+                'duration': duration
             }
             
         except Exception as e:
@@ -645,12 +696,14 @@ class BatchProcessor:
             
             if log_callback:
                 log_callback(f"❌ Failed [{reason}]: {os.path.basename(audio_file)}")
+            self._set_current_file_state(step='failed')
 
             return {
                 'status': 'failed',
                 'words': 0,
                 'process_time': 0,
-                'words_per_second': None
+                'words_per_second': None,
+                'duration': 0
             }
     
     def _create_summary(self, output_folder, total_time, log_callback):
@@ -702,6 +755,15 @@ class BatchProcessor:
         Returns:
             Dictionary with current statistics.
         """
+        processing_time_total = sum(self.processing_times)
+        observed_audio_seconds = sum(self.audio_durations)
+        observed_speed_ratio = (observed_audio_seconds / processing_time_total) if processing_time_total > 0 else 0.0
+        recent_speed_ratios = self.file_speed_ratios[-3:]
+        recent_speed_ratio = (sum(recent_speed_ratios) / len(recent_speed_ratios)) if recent_speed_ratios else 0.0
+        current_file_elapsed = 0.0
+        if self.current_file_started_at is not None:
+            current_file_elapsed = max(0.0, time.time() - self.current_file_started_at)
+
         return {
             'total': self.total_files,
             'processed': self.processed_files,
@@ -710,6 +772,7 @@ class BatchProcessor:
             'skipped': self.skipped_files,
             'transcribed': self.transcribed_files,
             'total_words': self.total_words,
+            'processed_audio_seconds': observed_audio_seconds,
             'processing_times': self.processing_times.copy(),
             'word_counts': self.word_counts.copy(),
             'audio_durations': self.audio_durations.copy(),
@@ -722,7 +785,28 @@ class BatchProcessor:
             'estimated_remaining_words': self.estimated_remaining_words,
             'estimated_total_files_to_transcribe': self.estimated_total_files_to_transcribe,
             'estimated_files_remaining_to_transcribe': self.estimated_files_remaining_to_transcribe,
+            'completed_transcribe_files': self.completed_transcribe_files,
+            'completed_transcribe_audio_seconds': self.completed_transcribe_audio_seconds,
+            'completed_transcribe_processing_seconds': self.completed_transcribe_processing_seconds,
+            'observed_speed_ratio': observed_speed_ratio,
+            'recent_speed_ratio': recent_speed_ratio,
+            'recent_speed_sample_size': len(recent_speed_ratios),
+            'eta_baseline_ready': observed_speed_ratio > 0,
+            'current_file': {
+                'path': self.current_file_path,
+                'name': os.path.basename(self.current_file_path) if self.current_file_path else None,
+                'step': self.current_file_step,
+                'elapsed_seconds': current_file_elapsed,
+                'audio_duration_seconds': self.current_file_audio_duration_seconds
+            },
             'actual_word_source_files': self.actual_word_source_files,
             'estimated_word_source_files': self.estimated_word_source_files,
-            'failed_reasons': self.failed_files_with_reasons.copy()
+            'pre_scan_summary': {
+                'existing_transcript_skips': self.pre_scan_summary.get('existing_transcript_skips', 0),
+                'duplicate_content_skips': self.pre_scan_summary.get('duplicate_content_skips', 0),
+                'duplicate_content_groups': list(self.pre_scan_summary.get('duplicate_content_groups', [])),
+                'output_path_collisions': list(self.pre_scan_summary.get('output_path_collisions', []))
+            },
+            'failed_reasons': self.failed_files_with_reasons.copy(),
+            'elapsed_seconds': (time.time() - self.start_time) if self.start_time else 0
         }

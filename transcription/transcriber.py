@@ -35,21 +35,31 @@ class Transcriber:
             audio_file: Path to audio file (required for model validation).
             
         Returns:
-            Tuple of (segment_list, info) where info is model metadata (duration, language, etc).
+            Tuple of (segment_list, info, avg_confidence) where info is model metadata (duration, language, etc).
                 segment_list: List of dicts with 'start', 'end', 'text' keys.
                 info: Model-specific info object containing duration and language.
+                avg_confidence: Average segment confidence when available, otherwise None.
         """
         segment_list = []
         info = None
+        avg_confidence = None
         
         if model_type == 'faster_whisper':
             segments, info = model.transcribe(audio_file, beam_size=5, vad_filter=True)
+            total_confidence = 0.0
+            segment_count = 0
             for segment in segments:
                 segment_list.append({
                     'start': segment.start,
                     'end': segment.end,
                     'text': segment.text
                 })
+                segment_confidence = getattr(segment, 'avg_logprob', None)
+                if segment_confidence is not None:
+                    total_confidence += float(segment_confidence)
+                    segment_count += 1
+            if segment_count > 0:
+                avg_confidence = total_confidence / segment_count
         elif model_type == 'whisper':
             result = model.transcribe(audio_file)
             info = result  # Store the entire result for language and duration access
@@ -61,10 +71,13 @@ class Transcriber:
                         'end': seg.get('end', 0),
                         'text': seg.get('text', '')
                     })
+                confidences = [seg.get('avg_logprob') for seg in result['segments'] if seg.get('avg_logprob') is not None]
+                if confidences:
+                    avg_confidence = sum(confidences) / len(confidences)
         else:
             raise ValueError(f"Unknown model type: {model_type}")
         
-        return segment_list, info
+        return segment_list, info, avg_confidence
     
     def transcribe(self, audio_file, engine, options=None):
         """Transcribe audio file (simple version).
@@ -90,7 +103,7 @@ class Transcriber:
             )
         
         # Normalize segments from model output
-        segment_list, info = self._normalize_segments(model, model_type, audio_file)
+        segment_list, info, _ = self._normalize_segments(model, model_type, audio_file)
         
         # Apply timestamps if requested
         if options and options.get('timestamps_enabled', False):
@@ -133,35 +146,15 @@ class Transcriber:
         audio_metadata = self.metadata_extractor.get_audio_metadata(audio_file)
         
         # Normalize segments from model output
-        segment_list, info = self._normalize_segments(model, model_type, audio_file)
+        segment_list, info, avg_confidence = self._normalize_segments(model, model_type, audio_file)
         
         # Extract metadata based on model type
         if model_type == 'faster_whisper':
             language = info.language if hasattr(info, 'language') else 'Unknown'
             duration = info.duration if hasattr(info, 'duration') else 0
-            
-            # Calculate average confidence
-            total_confidence = 0
-            segment_count = 0
-            for segment in segment_list:
-                # We need to reprocess to get confidence - use original segments
-                segments, _ = model.transcribe(audio_file, beam_size=5, vad_filter=True)
-                for s in segments:
-                    if hasattr(s, 'avg_logprob'):
-                        total_confidence += s.avg_logprob
-                        segment_count += 1
-                break  # Just get info from first iteration
-            
-            avg_confidence = total_confidence / segment_count if segment_count > 0 else None
         elif model_type == 'whisper':
             language = info.get('language', 'Unknown') if isinstance(info, dict) else 'Unknown'
             duration = info.get('duration', 0) if isinstance(info, dict) else 0
-            
-            # Calculate average confidence from segments
-            avg_confidence = None
-            if isinstance(info, dict) and 'segments' in info and len(info['segments']) > 0:
-                confidences = [seg.get('avg_logprob', 0) for seg in info['segments']]
-                avg_confidence = sum(confidences) / len(confidences) if confidences else None
         else:
             language = 'Unknown'
             duration = 0
@@ -191,18 +184,16 @@ class Transcriber:
                 options.get('timestamp_format', 'HH:MM:SS')
             )
         else:
-            # Concatenate text without timestamps
-            text = ""
-            for seg in segment_list:
-                text += seg['text'] + " "
-            text = text.strip()
+            # Concatenate text without timestamps using join() for efficiency.
+            text = " ".join(seg['text'].strip() for seg in segment_list if seg['text'].strip())
         
         return {
             'text': text,
             'language': language,
             'duration': duration,
             'avg_logprob': avg_confidence,
-            'audio_metadata': audio_metadata
+            'audio_metadata': audio_metadata,
+            'segments': segment_list
         }
     
     def transcribe_with_diarization(self, audio_file: str, engine: str, diarizer: Any, 
@@ -251,12 +242,15 @@ class Transcriber:
         # Get raw transcription data - we'll format timestamps with speakers in step 3
         transcribe_options = options.copy() if options else {}
         transcribe_options['timestamps_enabled'] = False  # Format timestamps with speakers in merge step
+        transcribe_options['diarization_timestamp_mode'] = (
+            options.get('diarization_timestamp_mode', 'speaker_turns') if options else 'speaker_turns'
+        )
         
         result = self.transcribe_with_metadata(audio_file, engine, transcribe_options, progress_callback=progress_callback)
         
-        # Step 3: Get segments with timestamps for merging
+        # Step 3: Reuse already-transcribed segments for merging to avoid a second inference pass.
         logger.info("Step 3/3: Merging speaker labels with transcript...")
-        segments = self._extract_segments_from_transcription(audio_file, engine)
+        segments = result.get('segments') or self._extract_segments_from_transcription(audio_file, engine)
         
         # Merge speaker labels with transcript segments (pass options for timestamp formatting)
         labeled_text = self._merge_speakers_with_transcript(speaker_timeline, segments, options)
@@ -290,7 +284,7 @@ class Transcriber:
             raise RuntimeError("No model loaded")
         
         # Use the normalized segments method
-        segment_list, info = self._normalize_segments(model, model_type, audio_file)
+        segment_list, info, _ = self._normalize_segments(model, model_type, audio_file)
         return segment_list
     
     def _merge_speakers_with_transcript(self, speaker_timeline: List[Tuple[float, float, str]], 
@@ -313,6 +307,7 @@ class Transcriber:
         
         # Check if timestamps should be included
         include_timestamps = options and options.get('timestamps_enabled', False)
+        timestamp_mode = options.get('diarization_timestamp_mode', 'speaker_turns') if options else 'speaker_turns'
         timestamp_format = options.get('timestamp_format', 'HH:MM:SS') if options else 'HH:MM:SS'
         timestamp_interval = options.get('timestamp_interval', 30) if options else 30
         
@@ -349,8 +344,12 @@ class Transcriber:
                 current_start_time = segment_start
                 last_timestamp_time = segment_start
             
-            # Check if we need to insert an interval timestamp
-            elif include_timestamps and (segment_start - last_timestamp_time) >= timestamp_interval:
+            # Check if we need to insert an interval timestamp for diarized output.
+            elif (
+                include_timestamps
+                and timestamp_mode == 'interval'
+                and (segment_start - last_timestamp_time) >= timestamp_interval
+            ):
                 # Flush current text with timestamp
                 if current_text:
                     text_line = ' '.join(current_text)
