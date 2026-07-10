@@ -1,6 +1,7 @@
 """Batch processor for transcribing multiple audio files."""
 import os
 import time
+import gc
 import hashlib
 import tempfile
 from collections import defaultdict
@@ -11,7 +12,12 @@ from utilities.format_utils import FormatUtils
 from utilities.date_parser import DateParser
 from utilities.audio_utils import AudioUtils
 from config.constants import STATUS_SKIPPED, BYTES_PER_MB
-from config.environment import WAVE_AVAILABLE, MUTAGEN_AVAILABLE
+from config.environment import WAVE_AVAILABLE, MUTAGEN_AVAILABLE, TORCH_AVAILABLE
+
+if TORCH_AVAILABLE:
+    import torch
+else:
+    torch = None
 
 if WAVE_AVAILABLE:
     import wave
@@ -70,6 +76,7 @@ class BatchProcessor:
         self.current_file_step = "idle"
         self.current_file_started_at = None
         self.current_file_audio_duration_seconds = 0.0
+        self._files_completed_for_trim = 0
 
     def _set_current_file_state(self, audio_file=None, step=None, start_now=False, audio_duration_seconds=None):
         """Track current-file status for live UI metrics."""
@@ -81,6 +88,38 @@ class BatchProcessor:
             self.current_file_started_at = time.time()
         if audio_duration_seconds is not None:
             self.current_file_audio_duration_seconds = max(0.0, float(audio_duration_seconds or 0.0))
+
+    def _maybe_trim_memory(self, options, log_callback=None):
+        """Best-effort memory cleanup for long batch runs.
+
+        This helps reduce sustained RAM/VRAM pressure in large jobs.
+        """
+        self._files_completed_for_trim += 1
+
+        try:
+            trim_every = int(options.get('memory_trim_every_files', 2))
+        except (TypeError, ValueError):
+            trim_every = 2
+
+        if trim_every <= 0:
+            trim_every = 2
+
+        if (self._files_completed_for_trim % trim_every) != 0:
+            return
+
+        try:
+            gc.collect()
+        except Exception:
+            pass
+
+        try:
+            if torch is not None and hasattr(self.model_manager, 'environment') and self.model_manager.environment.gpu_available:
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+        if options.get('verbose_memory_trim', False) and log_callback:
+            log_callback(f"🧹 Memory trim completed after {self._files_completed_for_trim} file(s)")
 
     def _quick_content_fingerprint(self, file_path, chunk_size=128 * 1024):
         """Create a fast fingerprint from file size + first/last chunk."""
@@ -436,6 +475,7 @@ class BatchProcessor:
         self.current_file_step = "idle"
         self.current_file_started_at = None
         self.current_file_audio_duration_seconds = 0.0
+        self._files_completed_for_trim = 0
         
         # Use pre-scan data if provided; otherwise compute it now.
         if pre_scan_data is None:
@@ -472,9 +512,6 @@ class BatchProcessor:
                 step='queued',
                 audio_duration_seconds=file_plan.get('estimated_duration_seconds', 0)
             )
-
-            if progress_callback:
-                progress_callback(i, self.total_files, audio_file)
             
             # Process the file
             result = self._process_single_file(
@@ -767,6 +804,8 @@ class BatchProcessor:
                 'words_per_second': None,
                 'duration': 0
             }
+        finally:
+            self._maybe_trim_memory(options, log_callback)
     
     def _create_summary(self, output_folder, total_time, log_callback):
         """Create batch summary report.
@@ -812,13 +851,14 @@ class BatchProcessor:
         """Request cancellation of batch processing."""
         self.cancel_requested = True
     
-    def get_statistics(self):
+    def get_statistics(self, include_history=True):
         """Get current processing statistics.
         
         Returns:
             Dictionary with current statistics.
         """
         processing_time_total = sum(self.processing_times)
+        processing_sample_count = len(self.processing_times)
         observed_audio_seconds = sum(self.audio_durations)
         observed_speed_ratio = (observed_audio_seconds / processing_time_total) if processing_time_total > 0 else 0.0
         recent_speed_ratios = self.file_speed_ratios[-3:]
@@ -836,11 +876,13 @@ class BatchProcessor:
             'transcribed': self.transcribed_files,
             'total_words': self.total_words,
             'processed_audio_seconds': observed_audio_seconds,
-            'processing_times': self.processing_times.copy(),
-            'word_counts': self.word_counts.copy(),
-            'audio_durations': self.audio_durations.copy(),
-            'file_sizes_mb': self.file_sizes_mb.copy(),
-            'file_words_per_second': self.file_words_per_second.copy(),
+            'processing_time_total': processing_time_total,
+            'processing_sample_count': processing_sample_count,
+            'processing_times': self.processing_times.copy() if include_history else [],
+            'word_counts': self.word_counts.copy() if include_history else [],
+            'audio_durations': self.audio_durations.copy() if include_history else [],
+            'file_sizes_mb': self.file_sizes_mb.copy() if include_history else [],
+            'file_words_per_second': self.file_words_per_second.copy() if include_history else [],
             'last_file_metrics': self.last_file_metrics.copy() if self.last_file_metrics else None,
             'estimated_total_audio_seconds': self.estimated_total_audio_seconds,
             'estimated_remaining_audio_seconds': self.estimated_remaining_audio_seconds,

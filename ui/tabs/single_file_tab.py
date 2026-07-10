@@ -7,7 +7,6 @@ import threading
 from utilities.format_utils import FormatUtils
 from utilities.date_parser import DateParser
 from utilities.audio_utils import AudioUtils
-from transcription.process_orchestrator import start_single_file_process
 from config.constants import TIMESTAMP_FORMATS, TIMESTAMP_INTERVALS, DEFAULT_TIMESTAMP_FORMAT, DEFAULT_TIMESTAMP_INTERVAL
 
 
@@ -46,7 +45,6 @@ class SingleFileTab:
         self.diarization_enabled = tk.BooleanVar(value=False)
         self.num_speakers = tk.IntVar(value=0)  # 0 = auto-detect
         self.diarization_timestamp_mode = tk.StringVar(value='speaker_turns')
-        self.use_process_isolation = tk.BooleanVar(value=False)
         
         # Create UI
         self._create_ui()
@@ -149,15 +147,6 @@ class SingleFileTab:
         
         ttk.Button(timestamp_frame, text="?", width=3, command=self.show_timestamp_help).grid(
             row=0, column=6, padx=(5, 0))
-
-        process_frame = ttk.Frame(options_frame)
-        process_frame.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        ttk.Checkbutton(
-            process_frame,
-            text="Run transcription in isolated worker process",
-            variable=self.use_process_isolation,
-            command=self.app.save_config
-        ).grid(row=0, column=0, sticky="w")
 
         # Model retention policy for repeated single-file runs.
         retention_frame = ttk.Frame(options_frame)
@@ -329,38 +318,30 @@ class SingleFileTab:
     
     def _transcribe_worker(self):
         """Worker thread for transcription."""
-        worker_process = None
-        worker_conn = None
         try:
-            if (
-                self.use_process_isolation.get()
-                and self.diarization_enabled.get()
-                and self.app.environment.pyannote_available
-                and not self.app.hf_token.get().strip()
-            ):
+            if self.diarization_enabled.get() and self.app.environment.pyannote_available and not self.app.hf_token.get().strip():
                 self.update_status("Error: Hugging Face token required for diarization")
-                messagebox.showerror(
+                self.app.root.after(0, lambda: messagebox.showerror(
                     "Token Required",
                     "Please configure your Hugging Face token in the Model Configuration tab.",
                     parent=self.frame
-                )
+                ))
                 return
 
-            if not self.use_process_isolation.get():
-                self.update_status("Loading model...")
-                success, error = self.app.model_manager.load_model(
-                    self.app.engine.get(),
-                    self.app.model_size.get(),
-                    self.app.compute_type.get()
-                )
-                if not success:
-                    self.update_status(f"Error: Failed to load model")
-                    messagebox.showerror(
-                        "Model Loading Error",
-                        f"Failed to load model.\n\n{error}",
-                        parent=self.frame
-                    )
-                    return
+            self.update_status("Loading model...")
+            success, error = self.app.model_manager.load_model(
+                self.app.engine.get(),
+                self.app.model_size.get(),
+                self.app.compute_type.get()
+            )
+            if not success:
+                self.update_status(f"Error: Failed to load model")
+                self.app.root.after(0, lambda e=error: messagebox.showerror(
+                    "Model Loading Error",
+                    f"Failed to load model.\n\n{e}",
+                    parent=self.frame
+                ))
+                return
             
             start_time = time.time()
             
@@ -373,93 +354,51 @@ class SingleFileTab:
                 'diarization_fallback_to_plain': True
             }
             
-            # Check if diarization is enabled
-            if self.use_process_isolation.get():
-                task = {
-                    'audio_file': self.file_path,
-                    'engine': self.app.engine.get(),
-                    'model_size': self.app.model_size.get(),
-                    'compute_type': self.app.compute_type.get(),
-                    'options': options,
-                    'diarization_enabled': self.diarization_enabled.get(),
-                    'num_speakers': self.num_speakers.get() if self.num_speakers.get() > 0 else None,
-                    'hf_token': self.app.hf_token.get().strip(),
-                }
-                worker_process, worker_conn = start_single_file_process(task)
+            if self.diarization_enabled.get() and self.app.environment.pyannote_available:
+                # Validate HF token
+                hf_token = self.app.hf_token.get()
+                if not hf_token or not hf_token.strip():
+                    self.update_status("Error: Hugging Face token required for diarization")
+                    self.app.root.after(0, lambda: messagebox.showerror(
+                        "Token Required",
+                        "Please configure your Hugging Face token in the Model Configuration tab.",
+                        parent=self.frame
+                    ))
+                    return
 
-                result = None
-                while True:
-                    if self.cancel_requested:
-                        if worker_process.is_alive():
-                            worker_process.terminate()
-                            worker_process.join(timeout=2)
-                        self.update_status("Transcription cancelled")
-                        return
+                self.update_status("Loading diarization model...")
+                # Load diarization pipeline
+                success = self.app.diarizer.load_pipeline(hf_token, whisper_loaded=True)
+                if not success:
+                    self.update_status("Error: Failed to load diarization model")
+                    self.app.root.after(0, lambda: messagebox.showerror(
+                        "Diarization Error",
+                        "Failed to load speaker diarization model. Check your Hugging Face token and internet connection.",
+                        parent=self.frame
+                    ))
+                    return
 
-                    if worker_conn.poll(0.2):
-                        try:
-                            message = worker_conn.recv()
-                        except (EOFError, OSError):
-                            raise RuntimeError("Worker process IPC channel closed unexpectedly")
-                        msg_type = message.get('type')
-                        if msg_type == 'status':
-                            self.update_status(message.get('message', 'Working...'))
-                        elif msg_type == 'result':
-                            result = message.get('result')
-                            break
-                        elif msg_type == 'error':
-                            raise RuntimeError(message.get('error', 'Worker process failed'))
-
-                    if not worker_process.is_alive() and not worker_conn.poll():
-                        if result is None:
-                            raise RuntimeError("Worker process exited before returning a result")
-                        break
-            else:
-                if self.diarization_enabled.get() and self.app.environment.pyannote_available:
-                    # Validate HF token
-                    hf_token = self.app.hf_token.get()
-                    if not hf_token or not hf_token.strip():
-                        self.update_status("Error: Hugging Face token required for diarization")
-                        messagebox.showerror(
-                            "Token Required",
-                            "Please configure your Hugging Face token in the Model Configuration tab.",
-                            parent=self.frame
-                        )
-                        return
-
-                    self.update_status("Loading diarization model...")
-                    # Load diarization pipeline
-                    success = self.app.diarizer.load_pipeline(hf_token, whisper_loaded=True)
-                    if not success:
-                        self.update_status("Error: Failed to load diarization model")
-                        messagebox.showerror(
-                            "Diarization Error",
-                            "Failed to load speaker diarization model. Check your Hugging Face token and internet connection.",
-                            parent=self.frame
-                        )
-                        return
-
-                    self.update_status("Transcribing with speaker diarization...")
-                    try:
-                        result = self.app.transcriber.transcribe_with_diarization(
-                            self.file_path,
-                            self.app.engine.get(),
-                            self.app.diarizer,
-                            self.num_speakers.get() if self.num_speakers.get() > 0 else None,
-                            options=options,
-                            progress_callback=self._update_progress
-                        )
-                    finally:
-                        # Cleanup diarizer
-                        self.app.diarizer.cleanup()
-                else:
-                    self.update_status("Transcribing audio...")
-                    result = self.app.transcriber.transcribe_with_metadata(
+                self.update_status("Transcribing with speaker diarization...")
+                try:
+                    result = self.app.transcriber.transcribe_with_diarization(
                         self.file_path,
                         self.app.engine.get(),
+                        self.app.diarizer,
+                        self.num_speakers.get() if self.num_speakers.get() > 0 else None,
                         options=options,
                         progress_callback=self._update_progress
                     )
+                finally:
+                    # Cleanup diarizer
+                    self.app.diarizer.cleanup()
+            else:
+                self.update_status("Transcribing audio...")
+                result = self.app.transcriber.transcribe_with_metadata(
+                    self.file_path,
+                    self.app.engine.get(),
+                    options=options,
+                    progress_callback=self._update_progress
+                )
             
             # Extract results
             text, language, duration, avg_confidence, audio_metadata = FormatUtils.extract_transcription_results(result)
@@ -527,19 +466,7 @@ class SingleFileTab:
             self.app.root.after(0, lambda e=e: messagebox.showerror("Error", f"Transcription failed: {e}"))
             self.update_status("Transcription failed")
         finally:
-            if worker_conn is not None:
-                try:
-                    worker_conn.close()
-                except Exception:
-                    pass
-            if worker_process is not None and worker_process.is_alive():
-                try:
-                    worker_process.terminate()
-                    worker_process.join(timeout=2)
-                except Exception:
-                    pass
-
-            if (not self.use_process_isolation.get()) and (not self.keep_model_loaded.get()):
+            if not self.keep_model_loaded.get():
                 self.app.model_manager.cleanup_model()
             self.app.root.after(0, self.progress.stop)
             self.app.root.after(0, lambda: self.transcribe_btn.config(state="normal"))
@@ -730,7 +657,6 @@ class SingleFileTab:
             'timestamp_format': self.timestamp_format.get(),
             'timestamp_interval': self.timestamp_interval.get(),
             'single_keep_model_loaded': self.keep_model_loaded.get(),
-            'single_use_process_isolation': self.use_process_isolation.get(),
             'diarization_enabled': self.diarization_enabled.get(),
             'diarization_num_speakers': self.num_speakers.get(),
             'diarization_timestamp_mode': self.diarization_timestamp_mode.get()
@@ -762,9 +688,6 @@ class SingleFileTab:
         if 'single_keep_model_loaded' in config:
             self.keep_model_loaded.set(config['single_keep_model_loaded'])
 
-        if 'single_use_process_isolation' in config:
-            self.use_process_isolation.set(config['single_use_process_isolation'])
-        
         if 'diarization_enabled' in config:
             self.diarization_enabled.set(config['diarization_enabled'])
         

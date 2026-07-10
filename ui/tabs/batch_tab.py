@@ -4,9 +4,9 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 import os
 import time
 import threading
+from datetime import datetime
 from utilities.file_utils import FileUtils
 from utilities.format_utils import FormatUtils
-from transcription.process_orchestrator import start_batch_process
 from config.constants import TIMESTAMP_FORMATS, TIMESTAMP_INTERVALS, DEFAULT_TIMESTAMP_FORMAT, DEFAULT_TIMESTAMP_INTERVAL
 
 
@@ -37,12 +37,12 @@ class BatchTab:
         self.timestamps_enabled = tk.BooleanVar(value=False)
         self.timestamp_format = tk.StringVar(value=DEFAULT_TIMESTAMP_FORMAT)
         self.timestamp_interval = tk.IntVar(value=DEFAULT_TIMESTAMP_INTERVAL)
+        self.create_timestamped_log = tk.BooleanVar(value=False)
         
         # Diarization variables
         self.diarization_enabled = tk.BooleanVar(value=False)
         self.num_speakers = tk.IntVar(value=0)  # 0 = auto-detect
         self.diarization_timestamp_mode = tk.StringVar(value='speaker_turns')
-        self.use_process_isolation = tk.BooleanVar(value=False)
 
         # Live metrics labels
         self.metrics_current_file_label = None
@@ -55,8 +55,9 @@ class BatchTab:
         self._metrics_samples_seen = 0
         self._metrics_time_sum = 0.0
         self._metrics_time_sq_sum = 0.0
-        self._batch_worker_process = None
-        self._batch_worker_conn = None
+        self._batch_log_file_path = None
+        self._batch_log_file_handle = None
+        self._batch_log_lock = threading.Lock()
         
         self._create_ui()
     
@@ -175,15 +176,18 @@ class BatchTab:
         ttk.Button(recursive_frame, text="?", width=3, command=self.show_recursive_help).grid(
             row=0, column=1, padx=(5, 0))
 
-        process_frame = ttk.Frame(opts_grid)
-        process_frame.grid(row=3, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        log_file_frame = ttk.Frame(opts_grid)
+        log_file_frame.grid(row=3, column=0, sticky="w", padx=(0, 15), pady=(5, 0))
         ttk.Checkbutton(
-            process_frame,
-            text="Run batch in isolated worker process",
-            variable=self.use_process_isolation,
+            log_file_frame,
+            text="Create timestamped batch log file",
+            variable=self.create_timestamped_log,
             command=self.app.save_config
         ).grid(row=0, column=0, sticky="w")
-        
+        ttk.Button(log_file_frame, text="?", width=3, command=self.show_batch_log_file_help).grid(
+            row=0, column=1, padx=(5, 0)
+        )
+
         # Timestamp options
         timestamp_frame = ttk.Frame(opts_grid)
         timestamp_frame.grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
@@ -446,6 +450,7 @@ class BatchTab:
     
     def start_batch(self):
         """Start batch processing."""
+        self._close_batch_log_file()
         audio_files = FileUtils.get_audio_files(self.input_folder, self.recursive.get())
         
         if not messagebox.askyesno("Start Batch Processing",
@@ -466,129 +471,23 @@ class BatchTab:
         self.log("🚀 Starting batch transcription...")
         self.log(f"📊 Total files: {len(audio_files)}")
         self.log("=" * 80)
+
+        if self.create_timestamped_log.get():
+            try:
+                self._open_batch_log_file()
+            except Exception as e:
+                self.log(f"⚠️ Could not create batch log file: {e}")
         
         self._reset_metrics_panel()
         self.batch_state = "Starting"
-        if not self.use_process_isolation.get():
-            self._refresh_metrics_panel(current=0, total=len(audio_files), current_file=None)
+        self._refresh_metrics_panel(current=0, total=len(audio_files), current_file=None)
         threading.Thread(target=self._batch_worker, daemon=True).start()
     
     def _batch_worker(self):
         """Batch processing worker thread."""
         diarizer_loaded = False
         try:
-            if self.use_process_isolation.get():
-                if self.diarization_enabled.get() and self.app.environment.pyannote_available:
-                    if not self.app.hf_token.get().strip():
-                        self.log("❌ Error: Hugging Face token required for diarization")
-                        self.app.root.after(0, lambda: messagebox.showerror(
-                            "Token Required",
-                            "Please configure your Hugging Face token in the Model Configuration tab."
-                        ))
-                        return
-
-                options = {
-                    'detect_date': self.detect_date.get(),
-                    'chars_per_line': self.chars_per_line.get(),
-                    'skip_existing': self.skip_existing.get(),
-                    'preserve_structure': self.preserve_structure.get(),
-                    'recursive': self.recursive.get(),
-                    'create_summary': self.create_summary.get(),
-                    'engine': self.app.engine.get(),
-                    'model': self.app.model_size.get(),
-                    'compute_type': self.app.compute_type.get(),
-                    'timestamps_enabled': self.timestamps_enabled.get(),
-                    'timestamp_format': self.timestamp_format.get(),
-                    'timestamp_interval': self.timestamp_interval.get(),
-                    'diarization_timestamp_mode': self.diarization_timestamp_mode.get(),
-                    'estimated_wpm': 150,
-                    'diarization_fallback_to_plain': True,
-                    'skip_duplicates': True,
-                }
-
-                task = {
-                    'input_folder': self.input_folder,
-                    'output_folder': self.output_folder,
-                    'engine': self.app.engine.get(),
-                    'model_size': self.app.model_size.get(),
-                    'compute_type': self.app.compute_type.get(),
-                    'options': options,
-                    'diarization_enabled': self.diarization_enabled.get() and self.app.environment.pyannote_available,
-                    'num_speakers': self.num_speakers.get() if self.num_speakers.get() > 0 else None,
-                    'hf_token': self.app.hf_token.get().strip(),
-                }
-
-                self._batch_worker_process, self._batch_worker_conn = start_batch_process(task)
-                results = None
-                while True:
-                    if self.batch_state == "Canceling":
-                        if self._batch_worker_process is not None and self._batch_worker_process.is_alive():
-                            self._batch_worker_process.terminate()
-                            self._batch_worker_process.join(timeout=2)
-                        self.log("⚠️ Batch cancelled")
-                        return
-
-                    if self._batch_worker_conn is not None and self._batch_worker_conn.poll(0.2):
-                        try:
-                            message = self._batch_worker_conn.recv()
-                        except (EOFError, OSError):
-                            raise RuntimeError("Batch worker IPC channel closed unexpectedly")
-                        msg_type = message.get('type')
-                        if msg_type == 'log':
-                            self.log(message.get('message', ''))
-                        elif msg_type == 'status':
-                            self.log(message.get('message', ''))
-                        elif msg_type == 'progress':
-                            current = int(message.get('current', 0))
-                            total = int(message.get('total', 0))
-                            filename = message.get('filename')
-                            self.current_file_name = os.path.basename(filename) if filename else None
-                            self.batch_state = "Running"
-                            self.app.root.after(
-                                0,
-                                lambda c=current, t=total: self.overall_progress.configure(
-                                    maximum=max(1, t), value=max(0, min(c, max(1, t)))
-                                )
-                            )
-                        elif msg_type == 'result':
-                            results = message.get('result', {})
-                            break
-                        elif msg_type == 'error':
-                            raise RuntimeError(message.get('error', 'Batch worker failed'))
-
-                    if (
-                        self._batch_worker_process is not None
-                        and not self._batch_worker_process.is_alive()
-                        and (self._batch_worker_conn is None or not self._batch_worker_conn.poll())
-                    ):
-                        if results is None:
-                            raise RuntimeError("Batch worker process exited before returning results")
-                        break
-
-                self.batch_state = "Done"
-                self.log("\n" + "=" * 80)
-                self.log("✅ Batch processing complete!")
-                self.log(f"⏱️  Total time: {FormatUtils.format_time(results.get('total_time', 0))}")
-                self.log(f"✅ Successful: {results.get('successful', 0)}/{results.get('total', 0)}")
-                if results.get('failed', 0) > 0:
-                    self.log(f"❌ Failed: {results.get('failed', 0)}")
-                if results.get('skipped', 0) > 0:
-                    self.log(f"⏭️  Skipped existing: {results.get('skipped', 0)}")
-                self.log("=" * 80)
-
-                if self._batch_worker_conn is not None:
-                    self._batch_worker_conn.close()
-                    self._batch_worker_conn = None
-                if self._batch_worker_process is not None:
-                    self._batch_worker_process.join(timeout=2)
-                    self._batch_worker_process = None
-
-                if self.batch_state != "Canceling":
-                    self.app.root.after(0, lambda: messagebox.showinfo(
-                        "Batch Complete",
-                        f"Successfully processed {results.get('successful', 0)}/{results.get('total', 0)} files"
-                    ))
-                return
+            effective_process_isolation = False
 
             # Load model
             success, error = self.app.model_manager.load_model(
@@ -598,11 +497,11 @@ class BatchTab:
             )
             if not success:
                 self.log(f"Error: Failed to load model. {error}")
-                messagebox.showerror(
+                self.app.root.after(0, lambda e=error: messagebox.showerror(
                     "Model Loading Error",
-                    f"Failed to load model.\n\n{error}",
+                    f"Failed to load model.\n\n{e}",
                     parent=self.frame
-                )
+                ))
                 return
             
             # Setup batch processor
@@ -622,7 +521,9 @@ class BatchTab:
                 'diarization_timestamp_mode': self.diarization_timestamp_mode.get(),
                 'estimated_wpm': 150,
                 'diarization_fallback_to_plain': True,
-                'skip_duplicates': True,
+                # Duplicate-content hashing can be expensive on large batches.
+                # Keep disabled by default for better stability.
+                'skip_duplicates': False,
                 'diarization_enabled': False  # Default
             }
 
@@ -710,21 +611,6 @@ class BatchTab:
             self.log(f"\n❌ Error: {e}")
             self.app.root.after(0, lambda e=e: messagebox.showerror("Error", f"Batch failed: {e}"))
         finally:
-            if self._batch_worker_conn is not None:
-                try:
-                    self._batch_worker_conn.close()
-                except Exception:
-                    pass
-                self._batch_worker_conn = None
-            if self._batch_worker_process is not None:
-                try:
-                    if self._batch_worker_process.is_alive():
-                        self._batch_worker_process.terminate()
-                    self._batch_worker_process.join(timeout=2)
-                except Exception:
-                    pass
-                self._batch_worker_process = None
-
             # Cleanup models
             self.app.model_manager.cleanup_model()
             if diarizer_loaded:
@@ -734,13 +620,16 @@ class BatchTab:
     
     def _update_progress(self, current, total, current_file):
         """Update progress."""
-        stats = self.app.batch_processor.get_statistics()
+        file_name = os.path.basename(current_file) if current_file else "unknown"
+        self._write_batch_log_file(f"PROGRESS {current}/{total}: {file_name}")
+        stats = self.app.batch_processor.get_statistics(include_history=False)
         progress_value = stats.get('completed_transcribe_files', 0)
         self.app.root.after(0, lambda v=progress_value: self.overall_progress.configure(value=v))
 
         self.batch_state = "Running"
         self.current_file_name = os.path.basename(current_file) if current_file else None
-        self.app.root.after(0, lambda: self._refresh_metrics_panel(current=current, total=total, current_file=current_file))
+        # Avoid queuing a full metrics refresh on every callback.
+        # Periodic refresh handles UI updates at a bounded cadence.
 
     def _reset_metrics_panel(self):
         """Reset the info panel before a new run."""
@@ -772,25 +661,12 @@ class BatchTab:
 
     def _refresh_metrics_panel(self, current=None, total=None, current_file=None, final=False):
         """Refresh live metrics shown in the info panel."""
-        stats = self.app.batch_processor.get_statistics()
+        stats = self.app.batch_processor.get_statistics(include_history=False)
 
         elapsed = stats.get('elapsed_seconds', 0)
-        processing_times = stats.get('processing_times', [])
-
-        # Keep rolling aggregates instead of recomputing full-list sums each refresh.
-        if len(processing_times) < self._metrics_samples_seen:
-            self._metrics_samples_seen = 0
-            self._metrics_time_sum = 0.0
-            self._metrics_time_sq_sum = 0.0
-
-        if len(processing_times) > self._metrics_samples_seen:
-            new_samples = processing_times[self._metrics_samples_seen:]
-            self._metrics_time_sum += sum(new_samples)
-            self._metrics_time_sq_sum += sum(x * x for x in new_samples)
-            self._metrics_samples_seen = len(processing_times)
-
-        sample_count = self._metrics_samples_seen
-        avg_time = (self._metrics_time_sum / sample_count) if sample_count > 0 else 0
+        sample_count = stats.get('processing_sample_count', 0)
+        processing_time_total = stats.get('processing_time_total', 0.0)
+        avg_time = (processing_time_total / sample_count) if sample_count > 0 else 0
 
         total_transcribe_files = stats.get('estimated_total_files_to_transcribe', 0)
         completed_transcribe_files = stats.get('completed_transcribe_files', 0)
@@ -803,14 +679,10 @@ class BatchTab:
         batch_eta_seconds = 0 if final else (remaining_audio / observed_speed_ratio if eta_ready and remaining_audio > 0 else 0)
 
         confidence = "Low"
-        if sample_count >= 3:
-            mean_t = avg_time if avg_time > 0 else 1
-            variance = max(0.0, (self._metrics_time_sq_sum / sample_count) - (mean_t * mean_t))
-            coef_var = (variance ** 0.5) / mean_t if mean_t > 0 else 1
-            if sample_count >= 12 and coef_var < 0.45:
-                confidence = "High"
-            elif sample_count >= 6 and coef_var < 0.75:
-                confidence = "Medium"
+        if sample_count >= 12:
+            confidence = "High"
+        elif sample_count >= 6:
+            confidence = "Medium"
 
         current_file_stats = stats.get('current_file', {})
         current_name = current_file_stats.get('name') or self.current_file_name or "-"
@@ -875,15 +747,11 @@ class BatchTab:
         if messagebox.askyesno("Cancel", "Cancel batch processing?"):
             self.batch_state = "Canceling"
             self.app.batch_processor.cancel()
-            if self._batch_worker_process is not None and self._batch_worker_process.is_alive():
-                try:
-                    self._batch_worker_process.terminate()
-                except Exception:
-                    pass
             self.cancel_btn.config(state="disabled")
     
     def _reset_ui(self):
         """Reset UI after processing."""
+        self._close_batch_log_file()
         self.start_btn.config(state="normal")
         self.cancel_btn.config(state="disabled")
         self.current_progress.stop()
@@ -897,6 +765,49 @@ class BatchTab:
         log_msg = f"[{timestamp}] {message}\n"
         self.app.root.after(0, lambda: self.log_text.insert(tk.END, log_msg))
         self.app.root.after(0, lambda: self.log_text.see(tk.END))
+        self._write_batch_log_file(message)
+
+    def _open_batch_log_file(self):
+        """Open a per-run timestamped batch log file in the output directory."""
+        if self._batch_log_file_handle is not None:
+            return
+
+        if not self.output_folder:
+            return
+
+        os.makedirs(self.output_folder, exist_ok=True)
+        file_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._batch_log_file_path = os.path.join(self.output_folder, f"_batch_log_{file_stamp}.txt")
+        self._batch_log_file_handle = open(self._batch_log_file_path, 'a', encoding='utf-8', buffering=1)
+
+        self._write_batch_log_file("=" * 80)
+        self._write_batch_log_file("Batch file logging enabled")
+        self._write_batch_log_file(f"Log path: {self._batch_log_file_path}")
+        self._write_batch_log_file("=" * 80)
+        self.log(f"📝 Batch log file: {self._batch_log_file_path}")
+
+    def _write_batch_log_file(self, message):
+        """Write a message to the batch run log file if enabled."""
+        if self._batch_log_file_handle is None:
+            return
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self._batch_log_lock:
+            self._batch_log_file_handle.write(f"[{timestamp}] {message}\n")
+            self._batch_log_file_handle.flush()
+
+    def _close_batch_log_file(self):
+        """Close the active batch run log file safely."""
+        if self._batch_log_file_handle is not None:
+            with self._batch_log_lock:
+                try:
+                    self._batch_log_file_handle.flush()
+                    self._batch_log_file_handle.close()
+                except Exception:
+                    pass
+
+        self._batch_log_file_handle = None
+        self._batch_log_file_path = None
     
     def clear_log(self):
         """Clear log."""
@@ -1034,6 +945,20 @@ class BatchTab:
             "Note: Timestamps are disabled by default."
         )
         messagebox.showinfo("Timestamp Help", help_text, parent=self.frame)
+
+    def show_batch_log_file_help(self):
+        """Show help dialog for timestamped batch log file option."""
+        help_text = (
+            "Create Timestamped Batch Log File\n\n"
+            "Writes a detailed timestamped log for each batch run.\n\n"
+            "When enabled:\n"
+            "  - Creates a new log file in the output folder\n"
+            "  - File name format: _batch_log_YYYYMMDD_HHMMSS.txt\n"
+            "  - Captures run events, progress updates, and errors\n"
+            "  - Keeps previous batch logs for history\n\n"
+            "Use this for troubleshooting failed runs or auditing what happened."
+        )
+        messagebox.showinfo("Batch Log File Help", help_text, parent=self.frame)
     
     def _on_timestamp_toggle(self):
         """Handle timestamp checkbox toggle."""
@@ -1090,7 +1015,7 @@ class BatchTab:
             'timestamps_enabled': self.timestamps_enabled.get(),
             'timestamp_format': self.timestamp_format.get(),
             'timestamp_interval': self.timestamp_interval.get(),
-            'use_process_isolation': self.use_process_isolation.get(),
+            'create_timestamped_log': self.create_timestamped_log.get(),
             'diarization_enabled': self.diarization_enabled.get(),
             'diarization_num_speakers': self.num_speakers.get(),
             'diarization_timestamp_mode': self.diarization_timestamp_mode.get()
@@ -1126,9 +1051,8 @@ class BatchTab:
             self.timestamp_format.set(config['timestamp_format'])
         if 'timestamp_interval' in config:
             self.timestamp_interval.set(config['timestamp_interval'])
-        if 'use_process_isolation' in config:
-            self.use_process_isolation.set(config['use_process_isolation'])
-        
+        if 'create_timestamped_log' in config:
+            self.create_timestamped_log.set(config['create_timestamped_log'])
         if 'diarization_enabled' in config:
             self.diarization_enabled.set(config['diarization_enabled'])
         if 'diarization_timestamp_mode' in config:

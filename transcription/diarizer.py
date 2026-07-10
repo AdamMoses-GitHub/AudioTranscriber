@@ -4,6 +4,8 @@ import av
 import numpy as np
 import os
 import tempfile
+import traceback
+import warnings
 from typing import Optional, List, Tuple
 from config.environment import PYANNOTE_AVAILABLE
 from config.constants import (
@@ -171,36 +173,49 @@ class Diarizer:
                 mmap_audio = np.memmap(
                     temp_pcm_path,
                     dtype=np.float32,
-                    mode='r',
+                    mode='r+',
                     shape=(total_samples, channels)
                 )
-                waveform = torch.from_numpy(mmap_audio).transpose(0, 1).contiguous()
+                waveform = torch.from_numpy(mmap_audio).transpose(0, 1)
             finally:
-                if mmap_audio is not None:
-                    try:
-                        mmap_audio._mmap.close()
-                    except Exception:
-                        pass
                 container.close()
-                if temp_pcm_path and os.path.exists(temp_pcm_path):
-                    try:
-                        os.remove(temp_pcm_path)
-                    except OSError:
-                        pass
             
             # Create audio dict for pyannote.audio
             audio = {
                 'waveform': waveform,
                 'sample_rate': sample_rate
             }
+            logger.info(
+                "Prepared diarization audio: waveform_shape=%s dtype=%s sample_rate=%s device=%s",
+                tuple(waveform.shape),
+                waveform.dtype,
+                sample_rate,
+                self.device,
+            )
             
-            # Run diarization
-            if num_speakers:
-                logger.info(f"Diarizing with {num_speakers} speakers")
-                diarization = self.pipeline(audio, num_speakers=num_speakers)
-            else:
-                logger.info("Diarizing with auto-detect speakers")
-                diarization = self.pipeline(audio)
+            # Run diarization (suppress known informational TF32 reproducibility warning noise).
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    'ignore',
+                    message=r'.*TensorFloat-32 \(TF32\) has been disabled.*',
+                    category=UserWarning,
+                    module=r'pyannote\.audio\.utils\.reproducibility'
+                )
+
+                if num_speakers:
+                    logger.info(f"Diarizing with {num_speakers} speakers")
+                    logger.info("Invoking pyannote pipeline with explicit speaker count")
+                    diarization = self.pipeline(audio, num_speakers=num_speakers)
+                else:
+                    logger.info("Diarizing with auto-detect speakers")
+                    logger.info("Invoking pyannote pipeline with auto speaker detection")
+                    diarization = self.pipeline(audio)
+
+            logger.info(
+                "Pyannote pipeline returned: type=%s attrs=%s",
+                type(diarization).__name__,
+                [name for name in dir(diarization) if not name.startswith('__')][:20],
+            )
             
             # Convert diarization result to list of tuples
             # pyannote.audio 4.0+ returns a DiarizeOutput object
@@ -230,8 +245,20 @@ class Diarizer:
             return timeline
             
         except Exception as e:
-            logger.error(f"Error during diarization: {e}")
+            logger.error("Error during diarization: %s", e)
+            logger.debug("Diarization traceback:\n%s", traceback.format_exc())
             raise RuntimeError(f"Diarization failed: {e}")
+        finally:
+            if mmap_audio is not None:
+                try:
+                    mmap_audio._mmap.close()
+                except Exception:
+                    pass
+            if temp_pcm_path and os.path.exists(temp_pcm_path):
+                try:
+                    os.remove(temp_pcm_path)
+                except OSError:
+                    pass
     
     def cleanup(self):
         """Free GPU memory used by diarization pipeline."""

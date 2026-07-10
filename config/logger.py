@@ -16,6 +16,7 @@ def get_logger(name: str) -> logging.Logger:
     # Only configure if not already configured
     if not logger.handlers:
         logger.setLevel(logging.DEBUG)
+        logger.propagate = False
         
         # Console handler
         handler = logging.StreamHandler()
@@ -28,5 +29,8 @@ def get_logger(name: str) -> logging.Logger:
         )
         handler.setFormatter(formatter)
         logger.addHandler(handler)
+    else:
+        # Prevent duplicate logs when root logger is also configured.
+        logger.propagate = False
     
     return logger

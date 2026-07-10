@@ -2,7 +2,6 @@
 import tkinter as tk
 from tkinter import ttk
 import time
-import traceback
 from config import Environment, ConfigManager
 from config.logger import get_logger
 from models import ModelManager
@@ -44,6 +43,12 @@ class AudioTranscriberApp:
         self.hf_token = tk.StringVar(value="")
         self.diarization_enabled = tk.BooleanVar(value=False)
         self.num_speakers = tk.IntVar(value=0)  # 0 = auto-detect
+
+        self._loading_config = True
+        self.engine.trace_add('write', lambda *args: self.save_config())
+        self.model_size.trace_add('write', lambda *args: self.save_config())
+        self.compute_type.trace_add('write', lambda *args: self.save_config())
+        self.hf_token.trace_add('write', lambda *args: self.save_config())
         
         # Create UI
         self._create_ui()
@@ -53,6 +58,8 @@ class AudioTranscriberApp:
         
         # Load configuration
         self.load_config()
+        self._loading_config = False
+        self.save_config()
         
         # Setup window close handler
         self.root.protocol("WM_DELETE_WINDOW", lambda: self.on_closing(source="wm_delete_window"))
@@ -104,6 +111,17 @@ class AudioTranscriberApp:
     def save_config(self):
         """Save application configuration."""
         try:
+            if getattr(self, '_loading_config', False):
+                return
+
+            single_file_config = {}
+            if hasattr(self, 'single_file_tab') and self.single_file_tab is not None:
+                single_file_config = self.single_file_tab.get_config()
+
+            batch_config = {}
+            if hasattr(self, 'batch_tab') and self.batch_tab is not None:
+                batch_config = {'batch_' + k: v for k, v in self.batch_tab.get_config().items()}
+
             config = {
                 # Engine settings
                 'engine': self.engine.get(),
@@ -112,12 +130,12 @@ class AudioTranscriberApp:
                 
                 # Diarization settings
                 'hf_token': self.hf_token.get(),
-                
+
                 # Single file tab
-                **self.single_file_tab.get_config(),
-                
+                **single_file_config,
+
                 # Batch tab
-                **{'batch_' + k: v for k, v in self.batch_tab.get_config().items()}
+                **batch_config
             }
             
             self.config_manager.save(config)
@@ -151,7 +169,6 @@ class AudioTranscriberApp:
                     'timestamp_format': config.get('timestamp_format', 'HH:MM:SS'),
                     'timestamp_interval': config.get('timestamp_interval', 30),
                     'single_keep_model_loaded': config.get('single_keep_model_loaded', True),
-                    'single_use_process_isolation': config.get('single_use_process_isolation', False),
                     'diarization_enabled': config.get('diarization_enabled', False),
                     'num_speakers': config.get('diarization_num_speakers', 0),
                     'diarization_timestamp_mode': config.get('diarization_timestamp_mode', 'speaker_turns')
@@ -171,7 +188,7 @@ class AudioTranscriberApp:
                     'timestamps_enabled': config.get('batch_timestamps_enabled', False),
                     'timestamp_format': config.get('batch_timestamp_format', 'HH:MM:SS'),
                     'timestamp_interval': config.get('batch_timestamp_interval', 30),
-                    'use_process_isolation': config.get('batch_use_process_isolation', False),
+                    'create_timestamped_log': config.get('batch_create_timestamped_log', False),
                     'diarization_enabled': config.get('batch_diarization_enabled', False),
                     'num_speakers': config.get('batch_diarization_num_speakers', 0),
                     'diarization_timestamp_mode': config.get('batch_diarization_timestamp_mode', 'speaker_turns')
@@ -183,12 +200,12 @@ class AudioTranscriberApp:
     def mark_batch_completed(self):
         """Track when batch processing completes for shutdown diagnostics."""
         self.last_batch_complete_at = time.time()
-        logger.info("Batch completed marker set at %.3f", self.last_batch_complete_at)
+        logger.debug("Batch completed marker set at %.3f", self.last_batch_complete_at)
 
     def _on_root_destroy_event(self, event):
         """Log destruction of the root window for close-path diagnostics."""
         if event.widget is self.root:
-            logger.warning("Root window <Destroy> event fired")
+            logger.debug("Root window <Destroy> event fired")
 
     def on_closing(self, source="unknown"):
         """Handle window closing."""
@@ -197,12 +214,10 @@ class AudioTranscriberApp:
         if self.last_batch_complete_at is not None:
             since_batch = now - self.last_batch_complete_at
 
-        stack_text = "".join(traceback.format_stack(limit=12))
-        logger.warning(
-            "on_closing invoked | source=%s | seconds_since_batch_complete=%s\nStack:\n%s",
+        logger.info(
+            "on_closing invoked | source=%s | seconds_since_batch_complete=%s",
             source,
-            f"{since_batch:.3f}" if since_batch is not None else "n/a",
-            stack_text
+            f"{since_batch:.3f}" if since_batch is not None else "n/a"
         )
 
         self.save_config()

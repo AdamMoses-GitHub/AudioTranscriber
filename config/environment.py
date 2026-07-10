@@ -1,36 +1,43 @@
 """Environment detection for Audio Transcriber."""
-import torch
+import os
+
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    TORCH_AVAILABLE = False
 
 # Try to import audio libraries
 try:
     from pydub import AudioSegment
     PYDUB_AVAILABLE = True
-except ImportError:
+except Exception:
     PYDUB_AVAILABLE = False
 
 try:
     import wave
     WAVE_AVAILABLE = True
-except ImportError:
+except Exception:
     WAVE_AVAILABLE = False
 
 try:
     from mutagen.id3 import ID3
     MUTAGEN_AVAILABLE = True
-except ImportError:
+except Exception:
     MUTAGEN_AVAILABLE = False
 
 # Try to import GPU-accelerated libraries
 try:
     import whisper
     WHISPER_AVAILABLE = True
-except ImportError:
+except Exception:
     WHISPER_AVAILABLE = False
 
 try:
     from faster_whisper import WhisperModel
     FASTER_WHISPER_AVAILABLE = True
-except ImportError:
+except Exception:
     FASTER_WHISPER_AVAILABLE = False
 
 try:
@@ -39,7 +46,7 @@ try:
     warnings.filterwarnings('ignore', category=UserWarning, module='pyannote.audio.core.io')
     from pyannote.audio import Pipeline
     PYANNOTE_AVAILABLE = True
-except ImportError:
+except Exception:
     PYANNOTE_AVAILABLE = False
 
 
@@ -56,13 +63,19 @@ class Environment:
         self.pyannote_available = PYANNOTE_AVAILABLE
         
         # GPU detection
-        self.gpu_available = torch.cuda.is_available()
+        self.gpu_available = bool(TORCH_AVAILABLE and torch.cuda.is_available())
         self.device = "cuda" if self.gpu_available else "cpu"
         self._gpu_name = None
         self._gpu_memory_gb = None
         if self.gpu_available:
-            self._gpu_name = torch.cuda.get_device_name(0)
-            self._gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            try:
+                self._gpu_name = torch.cuda.get_device_name(0)
+                self._gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            except Exception:
+                self.gpu_available = False
+                self.device = "cpu"
+                self._gpu_name = None
+                self._gpu_memory_gb = None
         
     def get_gpu_info(self):
         """Get GPU information."""
@@ -83,6 +96,7 @@ class Environment:
     def get_library_status(self):
         """Get status of all libraries."""
         return {
+            'torch': TORCH_AVAILABLE,
             'pydub': self.pydub_available,
             'wave': self.wave_available,
             'mutagen': self.mutagen_available,
@@ -138,22 +152,26 @@ class Environment:
         Returns:
             Device string ('cuda' or 'cpu').
         """
-        if not self.gpu_available:
+        forced = os.environ.get("AUDIO_TRANSCRIBER_DIARIZATION_DEVICE", "auto").strip().lower()
+        if forced in {"cpu", "cuda"}:
+            if forced == "cuda" and not self.gpu_available:
+                return "cpu"
+            return forced
+
+        if not self.gpu_available or not TORCH_AVAILABLE:
             return "cpu"
-        
-        # Check available VRAM if Whisper is already loaded
+
+        # If transcription model is already on GPU, ensure enough free VRAM
+        # before placing pyannote there as well.
         if whisper_loaded:
             try:
-                memory_gb = self._gpu_memory_gb
+                memory_gb = self._gpu_memory_gb or 0.0
                 used_memory = torch.cuda.memory_allocated(0) / (1024**3)
                 available = memory_gb - used_memory
-                
-                # pyannote needs ~2GB VRAM
-                if available > 2.5:
-                    return "cuda"
-                else:
-                    return "cpu"  # Not enough VRAM, fallback to CPU
+
+                # Keep a larger buffer for stability on long diarization runs.
+                return "cuda" if available > 3.5 else "cpu"
             except Exception:
-                return "cpu"  # Error checking VRAM, play it safe
-        
-        return "cuda"  # GPU available and nothing loaded yet
+                return "cpu"
+
+        return "cuda"
