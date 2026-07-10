@@ -121,8 +121,8 @@ class AudioTranscriberApp:
             }
             
             self.config_manager.save(config)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to save configuration: {e}")
     
     def load_config(self):
         """Load application configuration."""
@@ -150,6 +150,8 @@ class AudioTranscriberApp:
                     'timestamps_enabled': config.get('timestamps_enabled', False),
                     'timestamp_format': config.get('timestamp_format', 'HH:MM:SS'),
                     'timestamp_interval': config.get('timestamp_interval', 30),
+                    'single_keep_model_loaded': config.get('single_keep_model_loaded', True),
+                    'single_use_process_isolation': config.get('single_use_process_isolation', False),
                     'diarization_enabled': config.get('diarization_enabled', False),
                     'num_speakers': config.get('diarization_num_speakers', 0),
                     'diarization_timestamp_mode': config.get('diarization_timestamp_mode', 'speaker_turns')
@@ -169,13 +171,14 @@ class AudioTranscriberApp:
                     'timestamps_enabled': config.get('batch_timestamps_enabled', False),
                     'timestamp_format': config.get('batch_timestamp_format', 'HH:MM:SS'),
                     'timestamp_interval': config.get('batch_timestamp_interval', 30),
+                    'use_process_isolation': config.get('batch_use_process_isolation', False),
                     'diarization_enabled': config.get('batch_diarization_enabled', False),
                     'num_speakers': config.get('batch_diarization_num_speakers', 0),
                     'diarization_timestamp_mode': config.get('batch_diarization_timestamp_mode', 'speaker_turns')
                 }
                 self.batch_tab.set_config(batch_config)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to load configuration: {e}")
     
     def mark_batch_completed(self):
         """Track when batch processing completes for shutdown diagnostics."""

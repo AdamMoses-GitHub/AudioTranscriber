@@ -183,11 +183,9 @@ class ModelManager:
         if FASTER_WHISPER_AVAILABLE:
             cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
             if cache_dir.exists():
-                # Faster-whisper models are stored with different naming
-                faster_whisper_downloaded = any(
-                    f"models--Systran--faster-whisper-{model_size}" in str(p)
-                    for p in cache_dir.glob("*")
-                )
+                # Faster-whisper models are stored under model-specific prefixes.
+                pattern = f"models--Systran--faster-whisper-{model_size}*"
+                faster_whisper_downloaded = next(cache_dir.glob(pattern), None) is not None
         
         return whisper_downloaded, faster_whisper_downloaded
     

@@ -24,10 +24,20 @@ class FileUtils:
         audio_files: List[str] = []
         
         if recursive:
-            for root, dirs, files in os.walk(folder):
-                for file in files:
-                    if os.path.splitext(file)[1].lower() in AUDIO_EXTENSIONS:
-                        audio_files.append(os.path.join(root, file))
+            try:
+                def _on_walk_error(err):
+                    logger.warning(f"Skipping unreadable path during recursive scan: {err}")
+
+                for root, _, files in os.walk(folder, onerror=_on_walk_error):
+                    for file in files:
+                        if os.path.splitext(file)[1].lower() in AUDIO_EXTENSIONS:
+                            audio_files.append(os.path.join(root, file))
+            except FileNotFoundError:
+                logger.error(f"Folder not found: {folder}")
+            except PermissionError:
+                logger.error(f"Permission denied accessing folder: {folder}")
+            except OSError as e:
+                logger.error(f"OS error reading audio files from {folder}: {e}")
         else:
             try:
                 for file in os.listdir(folder):
@@ -38,8 +48,8 @@ class FileUtils:
                 logger.error(f"Folder not found: {folder}")
             except PermissionError:
                 logger.error(f"Permission denied accessing folder: {folder}")
-            except Exception as e:
-                logger.error(f"Error reading audio files from {folder}: {e}")
+            except OSError as e:
+                logger.error(f"OS error reading audio files from {folder}: {e}")
         
         return sorted(audio_files)
     
@@ -76,4 +86,5 @@ class FileUtils:
             try:
                 os.makedirs(directory, exist_ok=True)
             except OSError as e:
-                print(f"Error creating directory {directory}: {e}")
+                logger.error(f"Error creating directory {directory}: {e}")
+                raise

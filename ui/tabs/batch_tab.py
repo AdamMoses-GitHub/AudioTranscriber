@@ -6,6 +6,7 @@ import time
 import threading
 from utilities.file_utils import FileUtils
 from utilities.format_utils import FormatUtils
+from transcription.process_orchestrator import start_batch_process
 from config.constants import TIMESTAMP_FORMATS, TIMESTAMP_INTERVALS, DEFAULT_TIMESTAMP_FORMAT, DEFAULT_TIMESTAMP_INTERVAL
 
 
@@ -41,6 +42,7 @@ class BatchTab:
         self.diarization_enabled = tk.BooleanVar(value=False)
         self.num_speakers = tk.IntVar(value=0)  # 0 = auto-detect
         self.diarization_timestamp_mode = tk.StringVar(value='speaker_turns')
+        self.use_process_isolation = tk.BooleanVar(value=False)
 
         # Live metrics labels
         self.metrics_current_file_label = None
@@ -50,6 +52,11 @@ class BatchTab:
         self._metrics_refresh_interval_ms = 500
         self.batch_state = "Idle"
         self.current_file_name = None
+        self._metrics_samples_seen = 0
+        self._metrics_time_sum = 0.0
+        self._metrics_time_sq_sum = 0.0
+        self._batch_worker_process = None
+        self._batch_worker_conn = None
         
         self._create_ui()
     
@@ -167,10 +174,19 @@ class BatchTab:
                            row=0, column=0, sticky="w")
         ttk.Button(recursive_frame, text="?", width=3, command=self.show_recursive_help).grid(
             row=0, column=1, padx=(5, 0))
+
+        process_frame = ttk.Frame(opts_grid)
+        process_frame.grid(row=3, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        ttk.Checkbutton(
+            process_frame,
+            text="Run batch in isolated worker process",
+            variable=self.use_process_isolation,
+            command=self.app.save_config
+        ).grid(row=0, column=0, sticky="w")
         
         # Timestamp options
         timestamp_frame = ttk.Frame(opts_grid)
-        timestamp_frame.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        timestamp_frame.grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
         
         self.timestamps_checkbox = ttk.Checkbutton(
             timestamp_frame, 
@@ -214,7 +230,7 @@ class BatchTab:
         # Speaker Diarization section (optional feature)
         if self.app.environment.pyannote_available:
             diarization_frame = ttk.LabelFrame(opts_grid, text="Speaker Diarization (Optional)", padding="5")
-            diarization_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+            diarization_frame.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
             
             diar_controls = ttk.Frame(diarization_frame)
             diar_controls.grid(row=0, column=0, sticky="w")
@@ -276,7 +292,7 @@ class BatchTab:
         else:
             # Show message if pyannote not available
             unavail_frame = ttk.LabelFrame(opts_grid, text="Speaker Diarization (Not Available)", padding="5")
-            unavail_frame.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+            unavail_frame.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
             ttk.Label(
                 unavail_frame,
                 text="\u26a0\ufe0f pyannote.audio not installed. Run: pip install pyannote.audio torchaudio",
@@ -442,6 +458,7 @@ class BatchTab:
         self.cancel_btn.config(state="normal")
         self.overall_progress['maximum'] = len(audio_files)
         self.overall_progress['value'] = 0
+        self.current_progress.start()
         
         self.app.freeze_other_tabs(1)
         
@@ -452,13 +469,127 @@ class BatchTab:
         
         self._reset_metrics_panel()
         self.batch_state = "Starting"
-        self._refresh_metrics_panel(current=0, total=len(audio_files), current_file=None)
+        if not self.use_process_isolation.get():
+            self._refresh_metrics_panel(current=0, total=len(audio_files), current_file=None)
         threading.Thread(target=self._batch_worker, daemon=True).start()
     
     def _batch_worker(self):
         """Batch processing worker thread."""
         diarizer_loaded = False
         try:
+            if self.use_process_isolation.get():
+                if self.diarization_enabled.get() and self.app.environment.pyannote_available:
+                    if not self.app.hf_token.get().strip():
+                        self.log("❌ Error: Hugging Face token required for diarization")
+                        self.app.root.after(0, lambda: messagebox.showerror(
+                            "Token Required",
+                            "Please configure your Hugging Face token in the Model Configuration tab."
+                        ))
+                        return
+
+                options = {
+                    'detect_date': self.detect_date.get(),
+                    'chars_per_line': self.chars_per_line.get(),
+                    'skip_existing': self.skip_existing.get(),
+                    'preserve_structure': self.preserve_structure.get(),
+                    'recursive': self.recursive.get(),
+                    'create_summary': self.create_summary.get(),
+                    'engine': self.app.engine.get(),
+                    'model': self.app.model_size.get(),
+                    'compute_type': self.app.compute_type.get(),
+                    'timestamps_enabled': self.timestamps_enabled.get(),
+                    'timestamp_format': self.timestamp_format.get(),
+                    'timestamp_interval': self.timestamp_interval.get(),
+                    'diarization_timestamp_mode': self.diarization_timestamp_mode.get(),
+                    'estimated_wpm': 150,
+                    'diarization_fallback_to_plain': True,
+                    'skip_duplicates': True,
+                }
+
+                task = {
+                    'input_folder': self.input_folder,
+                    'output_folder': self.output_folder,
+                    'engine': self.app.engine.get(),
+                    'model_size': self.app.model_size.get(),
+                    'compute_type': self.app.compute_type.get(),
+                    'options': options,
+                    'diarization_enabled': self.diarization_enabled.get() and self.app.environment.pyannote_available,
+                    'num_speakers': self.num_speakers.get() if self.num_speakers.get() > 0 else None,
+                    'hf_token': self.app.hf_token.get().strip(),
+                }
+
+                self._batch_worker_process, self._batch_worker_conn = start_batch_process(task)
+                results = None
+                while True:
+                    if self.batch_state == "Canceling":
+                        if self._batch_worker_process is not None and self._batch_worker_process.is_alive():
+                            self._batch_worker_process.terminate()
+                            self._batch_worker_process.join(timeout=2)
+                        self.log("⚠️ Batch cancelled")
+                        return
+
+                    if self._batch_worker_conn is not None and self._batch_worker_conn.poll(0.2):
+                        try:
+                            message = self._batch_worker_conn.recv()
+                        except (EOFError, OSError):
+                            raise RuntimeError("Batch worker IPC channel closed unexpectedly")
+                        msg_type = message.get('type')
+                        if msg_type == 'log':
+                            self.log(message.get('message', ''))
+                        elif msg_type == 'status':
+                            self.log(message.get('message', ''))
+                        elif msg_type == 'progress':
+                            current = int(message.get('current', 0))
+                            total = int(message.get('total', 0))
+                            filename = message.get('filename')
+                            self.current_file_name = os.path.basename(filename) if filename else None
+                            self.batch_state = "Running"
+                            self.app.root.after(
+                                0,
+                                lambda c=current, t=total: self.overall_progress.configure(
+                                    maximum=max(1, t), value=max(0, min(c, max(1, t)))
+                                )
+                            )
+                        elif msg_type == 'result':
+                            results = message.get('result', {})
+                            break
+                        elif msg_type == 'error':
+                            raise RuntimeError(message.get('error', 'Batch worker failed'))
+
+                    if (
+                        self._batch_worker_process is not None
+                        and not self._batch_worker_process.is_alive()
+                        and (self._batch_worker_conn is None or not self._batch_worker_conn.poll())
+                    ):
+                        if results is None:
+                            raise RuntimeError("Batch worker process exited before returning results")
+                        break
+
+                self.batch_state = "Done"
+                self.log("\n" + "=" * 80)
+                self.log("✅ Batch processing complete!")
+                self.log(f"⏱️  Total time: {FormatUtils.format_time(results.get('total_time', 0))}")
+                self.log(f"✅ Successful: {results.get('successful', 0)}/{results.get('total', 0)}")
+                if results.get('failed', 0) > 0:
+                    self.log(f"❌ Failed: {results.get('failed', 0)}")
+                if results.get('skipped', 0) > 0:
+                    self.log(f"⏭️  Skipped existing: {results.get('skipped', 0)}")
+                self.log("=" * 80)
+
+                if self._batch_worker_conn is not None:
+                    self._batch_worker_conn.close()
+                    self._batch_worker_conn = None
+                if self._batch_worker_process is not None:
+                    self._batch_worker_process.join(timeout=2)
+                    self._batch_worker_process = None
+
+                if self.batch_state != "Canceling":
+                    self.app.root.after(0, lambda: messagebox.showinfo(
+                        "Batch Complete",
+                        f"Successfully processed {results.get('successful', 0)}/{results.get('total', 0)} files"
+                    ))
+                return
+
             # Load model
             success, error = self.app.model_manager.load_model(
                 self.app.engine.get(),
@@ -579,6 +710,21 @@ class BatchTab:
             self.log(f"\n❌ Error: {e}")
             self.app.root.after(0, lambda e=e: messagebox.showerror("Error", f"Batch failed: {e}"))
         finally:
+            if self._batch_worker_conn is not None:
+                try:
+                    self._batch_worker_conn.close()
+                except Exception:
+                    pass
+                self._batch_worker_conn = None
+            if self._batch_worker_process is not None:
+                try:
+                    if self._batch_worker_process.is_alive():
+                        self._batch_worker_process.terminate()
+                    self._batch_worker_process.join(timeout=2)
+                except Exception:
+                    pass
+                self._batch_worker_process = None
+
             # Cleanup models
             self.app.model_manager.cleanup_model()
             if diarizer_loaded:
@@ -591,7 +737,6 @@ class BatchTab:
         stats = self.app.batch_processor.get_statistics()
         progress_value = stats.get('completed_transcribe_files', 0)
         self.app.root.after(0, lambda v=progress_value: self.overall_progress.configure(value=v))
-        self.app.root.after(0, self.current_progress.start)
 
         self.batch_state = "Running"
         self.current_file_name = os.path.basename(current_file) if current_file else None
@@ -600,6 +745,9 @@ class BatchTab:
     def _reset_metrics_panel(self):
         """Reset the info panel before a new run."""
         self._stop_metrics_refresh()
+        self._metrics_samples_seen = 0
+        self._metrics_time_sum = 0.0
+        self._metrics_time_sq_sum = 0.0
         if self.metrics_current_file_label:
             self.metrics_current_file_label.config(text="Current: - | Step: idle | Elapsed: 0s | Audio: - | ETA: calibrating")
         if self.metrics_total_progress_label:
@@ -628,7 +776,21 @@ class BatchTab:
 
         elapsed = stats.get('elapsed_seconds', 0)
         processing_times = stats.get('processing_times', [])
-        avg_time = (sum(processing_times) / len(processing_times)) if processing_times else 0
+
+        # Keep rolling aggregates instead of recomputing full-list sums each refresh.
+        if len(processing_times) < self._metrics_samples_seen:
+            self._metrics_samples_seen = 0
+            self._metrics_time_sum = 0.0
+            self._metrics_time_sq_sum = 0.0
+
+        if len(processing_times) > self._metrics_samples_seen:
+            new_samples = processing_times[self._metrics_samples_seen:]
+            self._metrics_time_sum += sum(new_samples)
+            self._metrics_time_sq_sum += sum(x * x for x in new_samples)
+            self._metrics_samples_seen = len(processing_times)
+
+        sample_count = self._metrics_samples_seen
+        avg_time = (self._metrics_time_sum / sample_count) if sample_count > 0 else 0
 
         total_transcribe_files = stats.get('estimated_total_files_to_transcribe', 0)
         completed_transcribe_files = stats.get('completed_transcribe_files', 0)
@@ -641,13 +803,13 @@ class BatchTab:
         batch_eta_seconds = 0 if final else (remaining_audio / observed_speed_ratio if eta_ready and remaining_audio > 0 else 0)
 
         confidence = "Low"
-        if len(processing_times) >= 3:
+        if sample_count >= 3:
             mean_t = avg_time if avg_time > 0 else 1
-            variance = sum((x - mean_t) ** 2 for x in processing_times) / len(processing_times)
+            variance = max(0.0, (self._metrics_time_sq_sum / sample_count) - (mean_t * mean_t))
             coef_var = (variance ** 0.5) / mean_t if mean_t > 0 else 1
-            if len(processing_times) >= 12 and coef_var < 0.45:
+            if sample_count >= 12 and coef_var < 0.45:
                 confidence = "High"
-            elif len(processing_times) >= 6 and coef_var < 0.75:
+            elif sample_count >= 6 and coef_var < 0.75:
                 confidence = "Medium"
 
         current_file_stats = stats.get('current_file', {})
@@ -713,6 +875,11 @@ class BatchTab:
         if messagebox.askyesno("Cancel", "Cancel batch processing?"):
             self.batch_state = "Canceling"
             self.app.batch_processor.cancel()
+            if self._batch_worker_process is not None and self._batch_worker_process.is_alive():
+                try:
+                    self._batch_worker_process.terminate()
+                except Exception:
+                    pass
             self.cancel_btn.config(state="disabled")
     
     def _reset_ui(self):
@@ -923,6 +1090,7 @@ class BatchTab:
             'timestamps_enabled': self.timestamps_enabled.get(),
             'timestamp_format': self.timestamp_format.get(),
             'timestamp_interval': self.timestamp_interval.get(),
+            'use_process_isolation': self.use_process_isolation.get(),
             'diarization_enabled': self.diarization_enabled.get(),
             'diarization_num_speakers': self.num_speakers.get(),
             'diarization_timestamp_mode': self.diarization_timestamp_mode.get()
@@ -958,6 +1126,8 @@ class BatchTab:
             self.timestamp_format.set(config['timestamp_format'])
         if 'timestamp_interval' in config:
             self.timestamp_interval.set(config['timestamp_interval'])
+        if 'use_process_isolation' in config:
+            self.use_process_isolation.set(config['use_process_isolation'])
         
         if 'diarization_enabled' in config:
             self.diarization_enabled.set(config['diarization_enabled'])

@@ -2,6 +2,8 @@
 import torch
 import av
 import numpy as np
+import os
+import tempfile
 from typing import Optional, List, Tuple
 from config.environment import PYANNOTE_AVAILABLE
 from config.constants import (
@@ -125,21 +127,66 @@ class Diarizer:
             container = av.open(audio_file)
             audio_stream = container.streams.audio[0]
             sample_rate = audio_stream.rate
-            
-            # Read all audio frames and convert to numpy array
-            audio_data = []
-            for frame in container.decode(audio=0):
-                audio_data.append(frame.to_ndarray())
-            
-            container.close()
-            
-            # Concatenate all frames and convert to torch tensor
-            if len(audio_data) > 0:
-                waveform = np.concatenate(audio_data, axis=1)
-                # Convert to torch tensor and ensure shape is (channels, samples)
-                waveform = torch.from_numpy(waveform).float()
-            else:
-                raise RuntimeError("No audio data found in file")
+
+            temp_pcm_path = None
+            mmap_audio = None
+            try:
+                # Stream frames to a temp raw PCM file (float32 interleaved) to avoid
+                # keeping all decoded frame arrays in memory at once.
+                channels = None
+                total_samples = 0
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pcm') as pcm_file:
+                    temp_pcm_path = pcm_file.name
+                    for frame in container.decode(audio=0):
+                        frame_array = frame.to_ndarray()
+                        if frame_array.ndim == 1:
+                            frame_array = frame_array[np.newaxis, :]
+
+                        if channels is None:
+                            channels = frame_array.shape[0]
+
+                        if frame_array.shape[0] != channels:
+                            # Normalize channel count by truncating to the first detected layout.
+                            frame_array = frame_array[:channels, :]
+
+                        # Normalize integer PCM to [-1, 1] float32.
+                        if np.issubdtype(frame_array.dtype, np.integer):
+                            max_val = float(np.iinfo(frame_array.dtype).max or 1)
+                            frame_array = frame_array.astype(np.float32) / max_val
+                        else:
+                            frame_array = frame_array.astype(np.float32, copy=False)
+
+                        samples_in_frame = int(frame_array.shape[1])
+                        if samples_in_frame <= 0:
+                            continue
+
+                        interleaved = np.ascontiguousarray(frame_array.T)
+                        interleaved.tofile(pcm_file)
+                        total_samples += samples_in_frame
+
+                if channels is None or total_samples <= 0:
+                    raise RuntimeError("No audio data found in file")
+
+                # Memory-map the interleaved PCM and convert once to channel-first tensor.
+                mmap_audio = np.memmap(
+                    temp_pcm_path,
+                    dtype=np.float32,
+                    mode='r',
+                    shape=(total_samples, channels)
+                )
+                waveform = torch.from_numpy(mmap_audio).transpose(0, 1).contiguous()
+            finally:
+                if mmap_audio is not None:
+                    try:
+                        mmap_audio._mmap.close()
+                    except Exception:
+                        pass
+                container.close()
+                if temp_pcm_path and os.path.exists(temp_pcm_path):
+                    try:
+                        os.remove(temp_pcm_path)
+                    except OSError:
+                        pass
             
             # Create audio dict for pyannote.audio
             audio = {

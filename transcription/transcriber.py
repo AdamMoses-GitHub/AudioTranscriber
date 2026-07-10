@@ -160,20 +160,26 @@ class Transcriber:
             duration = 0
             avg_confidence = None
         
-        # Report progress if callback provided
-        if progress_callback and duration > 0:
+        # Report progress if callback provided.
+        # Throttle callback frequency to reduce UI update overhead on long files.
+        if progress_callback and duration > 0 and segment_list:
+            report_every = max(1, len(segment_list) // 100)
             for i, segment in enumerate(segment_list):
+                is_last = (i == len(segment_list) - 1)
+                if not is_last and (i % report_every) != 0:
+                    continue
+
                 elapsed_time = time.time() - start_time
                 current_position = segment['end']
                 progress = min(current_position / duration, 1.0)
-                
+
                 # Calculate speed factor (how much faster than realtime)
                 speed_factor = current_position / elapsed_time if elapsed_time > 0 else 0
-                
+
                 # Estimate time remaining
                 remaining_audio = duration - current_position
                 eta_seconds = remaining_audio / speed_factor if speed_factor > 0 else None
-                
+
                 progress_callback(progress, speed_factor, eta_seconds, current_position)
         
         # Apply timestamps if requested

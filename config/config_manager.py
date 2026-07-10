@@ -1,6 +1,7 @@
 """Configuration manager for Audio Transcriber."""
 import os
 import json
+import tempfile
 from .logger import get_logger
 
 logger = get_logger(__name__)
@@ -46,17 +47,40 @@ class ConfigManager:
         Args:
             config_dict: Dictionary of configuration values to save.
         """
+        temp_path = None
         try:
             self.config = config_dict
-            with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(config_dict, f, indent=2)
+
+            config_dir = os.path.dirname(os.path.abspath(self.config_file))
+            if config_dir:
+                os.makedirs(config_dir, exist_ok=True)
+
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                encoding='utf-8',
+                dir=config_dir or None,
+                delete=False,
+                newline='\n'
+            ) as temp_file:
+                temp_path = temp_file.name
+                json.dump(config_dict, temp_file, indent=2)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+
+            os.replace(temp_path, self.config_file)
             return True
         except TypeError as e:
-            print(f"Config contains non-serializable values: {e}")
+            logger.error(f"Config contains non-serializable values: {e}")
         except IOError as e:
-            print(f"Error writing config file: {e}")
+            logger.error(f"Error writing config file: {e}")
         except Exception as e:
-            print(f"Unexpected error saving config: {e}")
+            logger.error(f"Unexpected error saving config: {e}")
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
         return False
     
     def get(self, key, default=None):

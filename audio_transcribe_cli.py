@@ -15,6 +15,7 @@ from transcription import Transcriber, BatchProcessor
 from utilities.format_utils import FormatUtils
 from utilities.date_parser import DateParser
 from utilities.audio_utils import AudioUtils
+from utilities.file_utils import FileUtils
 
 
 class AudioTranscriberCLI:
@@ -54,80 +55,85 @@ class AudioTranscriberCLI:
         if not success:
             print(f"Error: Failed to load model. {error}")
             return 1
-        
-        # Transcribe
-        start_time = time.time()
-        print("Transcribing audio...")
-        
-        # Build options dict with timestamp settings
-        options = {
-            'timestamps_enabled': args.timestamps,
-            'timestamp_format': args.timestamp_format,
-            'timestamp_interval': args.timestamp_interval
-        }
-        
-        result = self.transcriber.transcribe_with_metadata(args.input, args.engine, options)
-        
-        # Extract results
-        text, language, duration, avg_confidence, audio_metadata = FormatUtils.extract_transcription_results(result)
-        
-        processing_time = time.time() - start_time
-        
-        # Format text if requested
-        if args.chars_per_line > 0:
-            text = FormatUtils.format_text_with_line_breaks(text, args.chars_per_line)
-        
-        # Detect date if requested
-        detected_date = None
-        day_of_week = None
-        if args.detect_date:
-            detected_date, day_of_week = DateParser.detect_date_from_filename(
-                os.path.basename(args.input)
+
+        try:
+            # Transcribe
+            start_time = time.time()
+            print("Transcribing audio...")
+
+            # Build options dict with timestamp settings
+            options = {
+                'timestamps_enabled': args.timestamps,
+                'timestamp_format': args.timestamp_format,
+                'timestamp_interval': args.timestamp_interval
+            }
+
+            result = self.transcriber.transcribe_with_metadata(args.input, args.engine, options)
+
+            # Extract results
+            text, language, duration, avg_confidence, audio_metadata = FormatUtils.extract_transcription_results(result)
+
+            processing_time = time.time() - start_time
+
+            # Format text if requested
+            if args.chars_per_line > 0:
+                text = FormatUtils.format_text_with_line_breaks(text, args.chars_per_line)
+
+            # Detect date if requested
+            detected_date = None
+            day_of_week = None
+            if args.detect_date:
+                detected_date, day_of_week = DateParser.detect_date_from_filename(
+                    os.path.basename(args.input)
+                )
+
+            # Build transcript with metadata
+            audio_metadata['file_size_bytes'] = os.path.getsize(args.input)
+            gpu_name = None
+            if self.environment.gpu_available:
+                gpu_name = self.environment.get_gpu_info()['name']
+
+            metadata_header = FormatUtils.build_transcript_metadata(
+                file_name=os.path.basename(args.input),
+                audio_metadata=audio_metadata,
+                duration=duration,
+                process_time=processing_time,
+                engine=args.engine,
+                model=args.model,
+                compute_type=args.compute,
+                language=language,
+                avg_confidence=avg_confidence,
+                detected_date=detected_date,
+                day_of_week=day_of_week,
+                gpu_available=self.environment.gpu_available,
+                gpu_name=gpu_name
             )
-        
-        # Build transcript with metadata
-        audio_metadata['file_size_bytes'] = os.path.getsize(args.input)
-        gpu_name = None
-        if self.environment.gpu_available:
-            gpu_name = self.environment.get_gpu_info()['name']
-        
-        metadata_header = FormatUtils.build_transcript_metadata(
-            file_name=os.path.basename(args.input),
-            audio_metadata=audio_metadata,
-            duration=duration,
-            process_time=processing_time,
-            engine=args.engine,
-            model=args.model,
-            compute_type=args.compute,
-            language=language,
-            avg_confidence=avg_confidence,
-            detected_date=detected_date,
-            day_of_week=day_of_week,
-            gpu_available=self.environment.gpu_available,
-            gpu_name=gpu_name
-        )
-        
-        final_text = metadata_header + text
-        
-        # Determine output file
-        if args.output:
-            output_file = args.output
-        else:
-            output_file = os.path.splitext(args.input)[0] + '.txt'
-        
-        # Save transcript
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(final_text)
-        
-        print(f"\nTranscription complete!")
-        print(f"Saved to: {output_file}")
-        print(f"Processing time: {FormatUtils.format_time(processing_time)}")
-        if duration > 0:
-            print(f"Speed: {duration/processing_time:.1f}x real-time")
-        
-        # Cleanup
-        self.model_manager.cleanup_model()
-        return 0
+
+            final_text = metadata_header + text
+
+            # Determine output file
+            if args.output:
+                output_file = args.output
+            else:
+                output_file = os.path.splitext(args.input)[0] + '.txt'
+
+            # Save transcript
+            FileUtils.ensure_directory(output_file)
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(final_text)
+
+            print(f"\nTranscription complete!")
+            print(f"Saved to: {output_file}")
+            print(f"Processing time: {FormatUtils.format_time(processing_time)}")
+            if duration > 0 and processing_time > 0:
+                print(f"Speed: {duration/processing_time:.1f}x real-time")
+
+            return 0
+        except Exception as e:
+            print(f"Error: Transcription failed. {e}")
+            return 1
+        finally:
+            self.model_manager.cleanup_model()
     
     def transcribe_batch(self, args):
         """Transcribe multiple audio files.

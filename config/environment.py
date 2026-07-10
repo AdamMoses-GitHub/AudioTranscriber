@@ -58,25 +58,26 @@ class Environment:
         # GPU detection
         self.gpu_available = torch.cuda.is_available()
         self.device = "cuda" if self.gpu_available else "cpu"
+        self._gpu_name = None
+        self._gpu_memory_gb = None
+        if self.gpu_available:
+            self._gpu_name = torch.cuda.get_device_name(0)
+            self._gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
         
     def get_gpu_info(self):
         """Get GPU information."""
         if self.gpu_available:
-            gpu_name = torch.cuda.get_device_name(0)
-            memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
             return {
                 'available': True,
-                'name': gpu_name,
-                'memory_gb': memory
+                'name': self._gpu_name,
+                'memory_gb': self._gpu_memory_gb
             }
         return {'available': False}
     
     def get_gpu_status_text(self):
         """Get human-readable GPU status."""
         if self.gpu_available:
-            gpu_name = torch.cuda.get_device_name(0)
-            memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-            return f"✅ GPU Available: {gpu_name} ({memory:.1f}GB VRAM)"
+            return f"✅ GPU Available: {self._gpu_name} ({self._gpu_memory_gb:.1f}GB VRAM)"
         return "❌ No GPU detected - CPU mode only (slower processing)"
     
     def get_library_status(self):
@@ -143,7 +144,7 @@ class Environment:
         # Check available VRAM if Whisper is already loaded
         if whisper_loaded:
             try:
-                memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                memory_gb = self._gpu_memory_gb
                 used_memory = torch.cuda.memory_allocated(0) / (1024**3)
                 available = memory_gb - used_memory
                 

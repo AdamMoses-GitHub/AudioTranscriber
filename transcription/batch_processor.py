@@ -2,6 +2,7 @@
 import os
 import time
 import hashlib
+import tempfile
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Callable, Optional, List
@@ -144,6 +145,31 @@ class BatchProcessor:
         base_name = os.path.splitext(os.path.basename(audio_file))[0]
         return os.path.join(output_folder, base_name + '.txt')
 
+    def _write_text_atomic(self, output_file, text):
+        """Write text atomically to avoid partial output files on interruption."""
+        FileUtils.ensure_directory(output_file)
+        target_dir = os.path.dirname(os.path.abspath(output_file))
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                encoding='utf-8',
+                dir=target_dir or None,
+                delete=False,
+                newline='\n'
+            ) as temp_file:
+                temp_path = temp_file.name
+                temp_file.write(text)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+            os.replace(temp_path, output_file)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
     def _count_words_in_existing_transcript(self, transcript_file):
         """Count words in an existing transcript file, if readable."""
         try:
@@ -159,63 +185,99 @@ class BatchProcessor:
         estimated_words_per_mb = options.get('estimated_words_per_mb', 1200)
         estimated_seconds_per_mb = options.get('estimated_seconds_per_mb', 64)
         skip_duplicates = options.get('skip_duplicates', True)
+        report_duplicates = options.get('report_duplicates', False)
+        duplicate_scan_enabled = bool(skip_duplicates or report_duplicates)
+
+        try:
+            min_duplicate_size_mb = max(0.0, float(options.get('duplicate_min_size_mb', 0.5)))
+        except (TypeError, ValueError):
+            min_duplicate_size_mb = 0.5
+        min_duplicate_size_bytes = int(min_duplicate_size_mb * BYTES_PER_MB)
+
+        try:
+            max_duplicate_group_files = max(2, int(options.get('duplicate_max_group_files', 200)))
+        except (TypeError, ValueError):
+            max_duplicate_group_files = 200
 
         if log_callback:
             log_callback(f"🔎 Pre-scan started for {len(audio_files)} file(s)")
 
         # Build output-path map early to detect collisions before processing.
         output_to_audio_files = defaultdict(list)
+        normalized_to_output = {}
         for audio_file in audio_files:
             output_file = self._build_output_file_path(audio_file, input_folder, output_folder, options)
-            output_to_audio_files[os.path.normcase(os.path.abspath(output_file))].append(audio_file)
+            norm_output = os.path.normcase(os.path.abspath(output_file))
+            output_to_audio_files[norm_output].append(audio_file)
+            if norm_output not in normalized_to_output:
+                normalized_to_output[norm_output] = os.path.abspath(output_file)
 
         output_collisions = []
         for norm_output, sources in output_to_audio_files.items():
             if len(sources) > 1:
                 output_collisions.append({
-                    'output_file': os.path.abspath(norm_output),
+                    'output_file': normalized_to_output.get(norm_output, norm_output),
                     'audio_files': sorted(sources)
                 })
 
         # Fast duplicate-content scan: size -> quick fingerprint -> full hash for ties.
+        # Heuristics:
+        # - Skip duplicate scan entirely unless it is needed.
+        # - Ignore very small files where hashing overhead rarely pays off.
+        # - Skip abnormally large same-size groups to keep pre-scan bounded.
         duplicate_groups = []
         duplicate_skip_set = set()
-        files_by_size = defaultdict(list)
-        for audio_file in audio_files:
-            try:
-                files_by_size[os.path.getsize(audio_file)].append(audio_file)
-            except Exception:
-                continue
-
-        candidate_groups = [group for group in files_by_size.values() if len(group) > 1]
-        for size_group in candidate_groups:
-            quick_groups = defaultdict(list)
-            for audio_file in size_group:
+        skipped_large_duplicate_groups = 0
+        if duplicate_scan_enabled:
+            files_by_size = defaultdict(list)
+            for audio_file in audio_files:
                 try:
-                    quick_fp = self._quick_content_fingerprint(audio_file)
-                    quick_groups[quick_fp].append(audio_file)
+                    file_size = os.path.getsize(audio_file)
+                    if file_size < min_duplicate_size_bytes:
+                        continue
+                    files_by_size[file_size].append(audio_file)
                 except Exception:
                     continue
 
-            for quick_group in quick_groups.values():
-                if len(quick_group) <= 1:
+            candidate_groups = [group for group in files_by_size.values() if len(group) > 1]
+            for size_group in candidate_groups:
+                if len(size_group) > max_duplicate_group_files:
+                    skipped_large_duplicate_groups += 1
                     continue
 
-                hash_groups = defaultdict(list)
-                for audio_file in quick_group:
+                quick_groups = defaultdict(list)
+                for audio_file in size_group:
                     try:
-                        full_hash = self._full_file_hash(audio_file)
-                        hash_groups[full_hash].append(audio_file)
+                        quick_fp = self._quick_content_fingerprint(audio_file)
+                        quick_groups[quick_fp].append(audio_file)
                     except Exception:
                         continue
 
-                for exact_group in hash_groups.values():
-                    if len(exact_group) <= 1:
+                for quick_group in quick_groups.values():
+                    if len(quick_group) <= 1:
                         continue
-                    sorted_group = sorted(exact_group)
-                    duplicate_groups.append({'audio_files': sorted_group})
-                    if skip_duplicates:
-                        duplicate_skip_set.update(sorted_group[1:])
+
+                    hash_groups = defaultdict(list)
+                    for audio_file in quick_group:
+                        try:
+                            full_hash = self._full_file_hash(audio_file)
+                            hash_groups[full_hash].append(audio_file)
+                        except Exception:
+                            continue
+
+                    for exact_group in hash_groups.values():
+                        if len(exact_group) <= 1:
+                            continue
+                        sorted_group = sorted(exact_group)
+                        duplicate_groups.append({'audio_files': sorted_group})
+                        if skip_duplicates:
+                            duplicate_skip_set.update(sorted_group[1:])
+
+            if log_callback and skipped_large_duplicate_groups > 0:
+                log_callback(
+                    f"⚠️ Duplicate scan skipped {skipped_large_duplicate_groups} large same-size group(s) "
+                    f"(limit={max_duplicate_group_files}, min_size={min_duplicate_size_mb:.2f}MB)"
+                )
 
         files = []
         estimated_total_audio_seconds = 0.0
@@ -557,8 +619,9 @@ class BatchProcessor:
                     'duration': est_duration
                 }
             
-            # Get file size
-            file_size = os.path.getsize(audio_file) / BYTES_PER_MB  # MB
+            # Get file size once and reuse to avoid repeated filesystem calls.
+            file_size_bytes = os.path.getsize(audio_file)
+            file_size = file_size_bytes / BYTES_PER_MB  # MB
             
             # Transcribe (with or without diarization)
             FileUtils.ensure_directory(output_file)
@@ -617,45 +680,44 @@ class BatchProcessor:
             
             # Save with comprehensive metadata using centralized formatter
             self._set_current_file_state(step='writing', audio_duration_seconds=duration if duration and duration > 0 else self.current_file_audio_duration_seconds)
-            with open(output_file, 'w', encoding='utf-8') as f:
-                # Build metadata header using centralized function
-                file_size_mb = os.path.getsize(audio_file) / BYTES_PER_MB
-                audio_metadata['file_size_bytes'] = os.path.getsize(audio_file)
-                
-                # Get GPU info if available
-                gpu_available = False
-                gpu_name = None
-                if hasattr(self.model_manager, 'environment') and self.model_manager.environment.gpu_available:
-                    gpu_available = True
-                    gpu_name = self.model_manager.environment.get_gpu_info()['name']
+            # Build metadata header using centralized function
+            file_size_mb = file_size
+            audio_metadata['file_size_bytes'] = file_size_bytes
 
-                diarization_requested = options.get('diarization_enabled', False)
-                diarization_metadata = {
-                    'enabled': diarization_requested,
-                    'requested_speakers': options.get('num_speakers'),
-                    'detected_speakers': result.get('num_speakers') if isinstance(result, dict) else None,
-                    'model': 'pyannote/speaker-diarization-3.1' if diarization_requested else None,
-                    'token_configured': True if diarization_requested else None
-                }
-                
-                metadata_header = FormatUtils.build_transcript_metadata(
-                    file_name=file_name,
-                    audio_metadata=audio_metadata,
-                    duration=duration,
-                    process_time=process_time,
-                    engine=options.get('engine', 'auto_gpu'),
-                    model=options.get('model', 'base'),
-                    compute_type=options.get('compute_type', 'float16'),
-                    language=language,
-                    avg_confidence=avg_confidence,
-                    detected_date=detected_date,
-                    day_of_week=day_of_week,
-                    gpu_available=gpu_available,
-                    gpu_name=gpu_name,
-                    diarization_metadata=diarization_metadata
-                )
-                f.write(metadata_header)
-                f.write(formatted_text)
+            # Get GPU info if available
+            gpu_available = False
+            gpu_name = None
+            if hasattr(self.model_manager, 'environment') and self.model_manager.environment.gpu_available:
+                gpu_available = True
+                gpu_name = self.model_manager.environment.get_gpu_info()['name']
+
+            diarization_requested = options.get('diarization_enabled', False)
+            diarization_metadata = {
+                'enabled': diarization_requested,
+                'requested_speakers': options.get('num_speakers'),
+                'detected_speakers': result.get('num_speakers') if isinstance(result, dict) else None,
+                'model': 'pyannote/speaker-diarization-3.1' if diarization_requested else None,
+                'token_configured': True if diarization_requested else None
+            }
+
+            metadata_header = FormatUtils.build_transcript_metadata(
+                file_name=file_name,
+                audio_metadata=audio_metadata,
+                duration=duration,
+                process_time=process_time,
+                engine=options.get('engine', 'auto_gpu'),
+                model=options.get('model', 'base'),
+                compute_type=options.get('compute_type', 'float16'),
+                language=language,
+                avg_confidence=avg_confidence,
+                detected_date=detected_date,
+                day_of_week=day_of_week,
+                gpu_available=gpu_available,
+                gpu_name=gpu_name,
+                diarization_metadata=diarization_metadata
+            )
+
+            self._write_text_atomic(output_file, metadata_header + formatted_text)
             
             if log_callback:
                 log_callback(f"✅ Success ({FormatUtils.format_time(process_time)}): {os.path.basename(output_file)}")
@@ -716,28 +778,29 @@ class BatchProcessor:
         """
         try:
             report_file = os.path.join(output_folder, "_batch_summary.txt")
-            
-            with open(report_file, 'w', encoding='utf-8') as f:
-                f.write("BATCH TRANSCRIPTION SUMMARY\n")
-                f.write("=" * 60 + "\n\n")
-                f.write(f"Completed: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Total Files: {self.total_files}\n")
-                f.write(f"Successful: {self.successful_files}\n")
-                f.write(f"Failed: {self.failed_files}\n")
-                f.write(f"Total Time: {FormatUtils.format_time(total_time)}\n")
-                
-                if self.processing_times:
-                    avg_time = sum(self.processing_times) / len(self.processing_times)
-                    f.write(f"Average Time per File: {FormatUtils.format_time(avg_time)}\n")
-                
-                # Include failure details if there were failures
-                if self.failed_files_with_reasons:
-                    f.write("\n" + "-" * 60 + "\n")
-                    f.write("FAILED FILES\n")
-                    f.write("-" * 60 + "\n\n")
-                    for filename, reason in sorted(self.failed_files_with_reasons.items()):
-                        f.write(f"• {filename}\n")
-                        f.write(f"  Reason: {reason}\n\n")
+            lines = []
+            lines.append("BATCH TRANSCRIPTION SUMMARY\n")
+            lines.append("=" * 60 + "\n\n")
+            lines.append(f"Completed: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            lines.append(f"Total Files: {self.total_files}\n")
+            lines.append(f"Successful: {self.successful_files}\n")
+            lines.append(f"Failed: {self.failed_files}\n")
+            lines.append(f"Total Time: {FormatUtils.format_time(total_time)}\n")
+
+            if self.processing_times:
+                avg_time = sum(self.processing_times) / len(self.processing_times)
+                lines.append(f"Average Time per File: {FormatUtils.format_time(avg_time)}\n")
+
+            # Include failure details if there were failures
+            if self.failed_files_with_reasons:
+                lines.append("\n" + "-" * 60 + "\n")
+                lines.append("FAILED FILES\n")
+                lines.append("-" * 60 + "\n\n")
+                for filename, reason in sorted(self.failed_files_with_reasons.items()):
+                    lines.append(f"• {filename}\n")
+                    lines.append(f"  Reason: {reason}\n\n")
+
+            self._write_text_atomic(report_file, "".join(lines))
             
             if log_callback:
                 log_callback(f"📄 Summary saved: {os.path.basename(report_file)}")
