@@ -189,6 +189,8 @@ class AudioTranscriberApp:
                     'timestamp_format': config.get('batch_timestamp_format', 'HH:MM:SS'),
                     'timestamp_interval': config.get('batch_timestamp_interval', 30),
                     'create_timestamped_log': config.get('batch_create_timestamped_log', False),
+                    'crash_telemetry_enabled': config.get('batch_crash_telemetry_enabled', False),
+                    'crash_telemetry_every_files': config.get('batch_crash_telemetry_every_files', 25),
                     'diarization_enabled': config.get('batch_diarization_enabled', False),
                     'num_speakers': config.get('batch_diarization_num_speakers', 0),
                     'diarization_timestamp_mode': config.get('batch_diarization_timestamp_mode', 'speaker_turns')

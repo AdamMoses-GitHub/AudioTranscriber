@@ -2,6 +2,8 @@
 import os
 import time
 import gc
+import sys
+import ctypes
 import hashlib
 import tempfile
 from collections import defaultdict
@@ -77,6 +79,7 @@ class BatchProcessor:
         self.current_file_started_at = None
         self.current_file_audio_duration_seconds = 0.0
         self._files_completed_for_trim = 0
+        self._files_completed_for_telemetry = 0
 
     def _set_current_file_state(self, audio_file=None, step=None, start_now=False, audio_duration_seconds=None):
         """Track current-file status for live UI metrics."""
@@ -92,21 +95,9 @@ class BatchProcessor:
     def _maybe_trim_memory(self, options, log_callback=None):
         """Best-effort memory cleanup for long batch runs.
 
-        This helps reduce sustained RAM/VRAM pressure in large jobs.
+        IMPORTANT: Only call this at batch END or when models are NOT loaded,
+        as torch.cuda.empty_cache() can destabilize active inference.
         """
-        self._files_completed_for_trim += 1
-
-        try:
-            trim_every = int(options.get('memory_trim_every_files', 2))
-        except (TypeError, ValueError):
-            trim_every = 2
-
-        if trim_every <= 0:
-            trim_every = 2
-
-        if (self._files_completed_for_trim % trim_every) != 0:
-            return
-
         try:
             gc.collect()
         except Exception:
@@ -119,7 +110,119 @@ class BatchProcessor:
             pass
 
         if options.get('verbose_memory_trim', False) and log_callback:
-            log_callback(f"🧹 Memory trim completed after {self._files_completed_for_trim} file(s)")
+            log_callback(f"🧹 Memory trim completed")
+
+    def _get_process_rss_mb(self):
+        """Get process RSS memory in MB when available. Safe to call anytime."""
+        try:
+            if os.name == 'nt':
+                class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
+                    _fields_ = [
+                        ('cb', ctypes.c_ulong),
+                        ('PageFaultCount', ctypes.c_ulong),
+                        ('PeakWorkingSetSize', ctypes.c_size_t),
+                        ('WorkingSetSize', ctypes.c_size_t),
+                        ('QuotaPeakPagedPoolUsage', ctypes.c_size_t),
+                        ('QuotaPagedPoolUsage', ctypes.c_size_t),
+                        ('QuotaPeakNonPagedPoolUsage', ctypes.c_size_t),
+                        ('QuotaNonPagedPoolUsage', ctypes.c_size_t),
+                        ('PagefileUsage', ctypes.c_size_t),
+                        ('PeakPagefileUsage', ctypes.c_size_t),
+                        ('PrivateUsage', ctypes.c_size_t),
+                    ]
+
+                counters = PROCESS_MEMORY_COUNTERS_EX()
+                counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS_EX)
+                proc_handle = ctypes.windll.kernel32.GetCurrentProcess()
+                ok = ctypes.windll.psapi.GetProcessMemoryInfo(
+                    proc_handle,
+                    ctypes.byref(counters),
+                    counters.cb
+                )
+                if ok:
+                    return counters.WorkingSetSize / BYTES_PER_MB
+                return None
+
+            import resource
+
+            rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+            if sys.platform == 'darwin':
+                return rss_kb / BYTES_PER_MB
+            return float(rss_kb) / 1024.0
+        except Exception:
+            # Silently return None if ctypes/system calls fail
+            return None
+
+    def _get_gpu_memory_snapshot(self):
+        """Get a GPU memory snapshot in MB when CUDA is active. Safe to call anytime."""
+        if torch is None:
+            return None
+
+        try:
+            if not (hasattr(self.model_manager, 'environment') and self.model_manager.environment.gpu_available):
+                return None
+
+            allocated = torch.cuda.memory_allocated(0) / BYTES_PER_MB
+            reserved = torch.cuda.memory_reserved(0) / BYTES_PER_MB
+            peak_allocated = torch.cuda.max_memory_allocated(0) / BYTES_PER_MB
+
+            free_mb = None
+            total_mb = None
+            if hasattr(torch.cuda, 'mem_get_info'):
+                free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+                free_mb = free_bytes / BYTES_PER_MB
+                total_mb = total_bytes / BYTES_PER_MB
+
+            return {
+                'allocated_mb': allocated,
+                'reserved_mb': reserved,
+                'peak_allocated_mb': peak_allocated,
+                'free_mb': free_mb,
+                'total_mb': total_mb,
+            }
+        except Exception:
+            # Silently return None if CUDA queries fail
+            return None
+
+    def _maybe_log_crash_telemetry(self, options, log_callback=None):
+        """Emit optional crash telemetry line every N completed files."""
+        self._files_completed_for_telemetry += 1
+
+        if not options.get('crash_telemetry_enabled', False):
+            return
+        if not log_callback:
+            return
+
+        try:
+            every_n_files = int(options.get('crash_telemetry_every_files', 25))
+        except (TypeError, ValueError):
+            every_n_files = 25
+
+        if every_n_files <= 0:
+            every_n_files = 25
+
+        if (self._files_completed_for_telemetry % every_n_files) != 0:
+            return
+
+        rss_mb = self._get_process_rss_mb()
+        gpu = self._get_gpu_memory_snapshot()
+
+        parts = [f"🩺 Crash telemetry: files={self._files_completed_for_telemetry}"]
+        if rss_mb is not None:
+            parts.append(f"rss={rss_mb:.1f}MB")
+        else:
+            parts.append("rss=n/a")
+
+        if gpu is not None:
+            parts.append(f"gpu_alloc={gpu['allocated_mb']:.1f}MB")
+            parts.append(f"gpu_res={gpu['reserved_mb']:.1f}MB")
+            parts.append(f"gpu_peak={gpu['peak_allocated_mb']:.1f}MB")
+            if gpu['free_mb'] is not None and gpu['total_mb'] is not None:
+                parts.append(f"gpu_free={gpu['free_mb']:.1f}MB/{gpu['total_mb']:.1f}MB")
+        else:
+            parts.append("gpu=n/a")
+
+        log_callback(" | ".join(parts))
 
     def _quick_content_fingerprint(self, file_path, chunk_size=128 * 1024):
         """Create a fast fingerprint from file size + first/last chunk."""
@@ -476,6 +579,7 @@ class BatchProcessor:
         self.current_file_started_at = None
         self.current_file_audio_duration_seconds = 0.0
         self._files_completed_for_trim = 0
+        self._files_completed_for_telemetry = 0
         
         # Use pre-scan data if provided; otherwise compute it now.
         if pre_scan_data is None:
@@ -572,6 +676,9 @@ class BatchProcessor:
             self._set_current_file_state(step=status)
 
             self.processed_files = i + 1
+
+            # Optional per-file telemetry and memory management (end of batch loop iteration)
+            self._maybe_log_crash_telemetry(options, log_callback)
 
             if progress_callback:
                 progress_callback(self.processed_files, self.total_files, audio_file)
@@ -804,8 +911,6 @@ class BatchProcessor:
                 'words_per_second': None,
                 'duration': 0
             }
-        finally:
-            self._maybe_trim_memory(options, log_callback)
     
     def _create_summary(self, output_folder, total_time, log_callback):
         """Create batch summary report.

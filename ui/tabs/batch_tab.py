@@ -38,6 +38,8 @@ class BatchTab:
         self.timestamp_format = tk.StringVar(value=DEFAULT_TIMESTAMP_FORMAT)
         self.timestamp_interval = tk.IntVar(value=DEFAULT_TIMESTAMP_INTERVAL)
         self.create_timestamped_log = tk.BooleanVar(value=False)
+        self.crash_telemetry_enabled = tk.BooleanVar(value=False)
+        self.crash_telemetry_every_files = tk.IntVar(value=25)
         
         # Diarization variables
         self.diarization_enabled = tk.BooleanVar(value=False)
@@ -186,6 +188,34 @@ class BatchTab:
         ).grid(row=0, column=0, sticky="w")
         ttk.Button(log_file_frame, text="?", width=3, command=self.show_batch_log_file_help).grid(
             row=0, column=1, padx=(5, 0)
+        )
+
+        telemetry_frame = ttk.Frame(opts_grid)
+        telemetry_frame.grid(row=3, column=1, sticky="w", pady=(5, 0))
+        ttk.Checkbutton(
+            telemetry_frame,
+            text="Enable crash telemetry snapshots",
+            variable=self.crash_telemetry_enabled,
+            command=self.app.save_config
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(telemetry_frame, text="every", foreground="gray", font=("Arial", 8)).grid(
+            row=0, column=1, sticky="w", padx=(8, 4)
+        )
+        telemetry_spin = ttk.Spinbox(
+            telemetry_frame,
+            from_=1,
+            to=500,
+            width=6,
+            textvariable=self.crash_telemetry_every_files,
+            command=self.app.save_config
+        )
+        telemetry_spin.grid(row=0, column=2, sticky="w")
+        self.crash_telemetry_every_files.trace_add('write', lambda *args: self.app.save_config())
+        ttk.Label(telemetry_frame, text="files", foreground="gray", font=("Arial", 8)).grid(
+            row=0, column=3, sticky="w", padx=(4, 0)
+        )
+        ttk.Button(telemetry_frame, text="?", width=3, command=self.show_crash_telemetry_help).grid(
+            row=0, column=4, padx=(5, 0)
         )
 
         # Timestamp options
@@ -524,6 +554,8 @@ class BatchTab:
                 # Duplicate-content hashing can be expensive on large batches.
                 # Keep disabled by default for better stability.
                 'skip_duplicates': False,
+                'crash_telemetry_enabled': self.crash_telemetry_enabled.get(),
+                'crash_telemetry_every_files': max(1, self.crash_telemetry_every_files.get()),
                 'diarization_enabled': False  # Default
             }
 
@@ -615,6 +647,17 @@ class BatchTab:
             self.app.model_manager.cleanup_model()
             if diarizer_loaded:
                 self.app.diarizer.cleanup()
+            
+            # Safe memory trim after models are cleaned up
+            try:
+                import gc
+                gc.collect()
+                if self.app.environment.gpu_available:
+                    import torch
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            
             self.app.root.after(0, self._reset_ui)
             self.app.root.after(0, self.app.unfreeze_all_tabs)
     
@@ -959,6 +1002,25 @@ class BatchTab:
             "Use this for troubleshooting failed runs or auditing what happened."
         )
         messagebox.showinfo("Batch Log File Help", help_text, parent=self.frame)
+
+    def show_crash_telemetry_help(self):
+        """Show help dialog for crash telemetry snapshots option."""
+        help_text = (
+            "Crash Telemetry Snapshots\n\n"
+            "Logs lightweight process memory snapshots every N completed files.\n\n"
+            "What gets logged:\n"
+            "  - Process RSS memory (MB)\n"
+            "  - CUDA memory allocated/reserved/peak (if GPU active)\n"
+            "  - CUDA free/total memory when available\n\n"
+            "Why this helps:\n"
+            "  - Shows whether memory climbs before hard crashes\n"
+            "  - Helps distinguish app-level issues from GPU/runtime instability\n\n"
+            "Notes:\n"
+            "  - Disabled by default\n"
+            "  - Writes to the same batch log output stream\n"
+            "  - Lower intervals create more log lines"
+        )
+        messagebox.showinfo("Crash Telemetry Help", help_text, parent=self.frame)
     
     def _on_timestamp_toggle(self):
         """Handle timestamp checkbox toggle."""
@@ -1016,6 +1078,8 @@ class BatchTab:
             'timestamp_format': self.timestamp_format.get(),
             'timestamp_interval': self.timestamp_interval.get(),
             'create_timestamped_log': self.create_timestamped_log.get(),
+            'crash_telemetry_enabled': self.crash_telemetry_enabled.get(),
+            'crash_telemetry_every_files': self.crash_telemetry_every_files.get(),
             'diarization_enabled': self.diarization_enabled.get(),
             'diarization_num_speakers': self.num_speakers.get(),
             'diarization_timestamp_mode': self.diarization_timestamp_mode.get()
@@ -1053,6 +1117,13 @@ class BatchTab:
             self.timestamp_interval.set(config['timestamp_interval'])
         if 'create_timestamped_log' in config:
             self.create_timestamped_log.set(config['create_timestamped_log'])
+        if 'crash_telemetry_enabled' in config:
+            self.crash_telemetry_enabled.set(config['crash_telemetry_enabled'])
+        if 'crash_telemetry_every_files' in config:
+            try:
+                self.crash_telemetry_every_files.set(max(1, int(config['crash_telemetry_every_files'])))
+            except (TypeError, ValueError):
+                self.crash_telemetry_every_files.set(25)
         if 'diarization_enabled' in config:
             self.diarization_enabled.set(config['diarization_enabled'])
         if 'diarization_timestamp_mode' in config:
