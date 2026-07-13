@@ -3,21 +3,26 @@
 # No GPU required - runs on any system (slower transcription)
 
 # PyTorch CPU-only (no CUDA support)
-torch>=2.0.0
-torchvision>=0.15.0
-torchaudio>=2.1.0
+torch>=2.5.0
+torchvision>=0.20.0
+torchaudio>=2.5.0
+
+# Core numerical library
+numpy>=1.24.0             # Required by pyannote and audio processing
 
 # Whisper transcription engines
 openai-whisper>=20231117  # OpenAI's Whisper speech recognition model
-faster-whisper>=0.9.0     # Optimized Whisper implementation (faster on CPU)
+faster-whisper>=1.0.0     # Optimized Whisper implementation (faster on CPU)
 
 # Speaker diarization (CPU mode)
-pyannote.audio>=3.1.0     # Speaker diarization toolkit
+pyannote.audio>=3.4.0     # Speaker diarization toolkit with memory improvements
+huggingface_hub>=0.30,<1.0  # Pinned: pyannote 3.4 uses use_auth_token, removed in hub 1.0+
 
 # Audio processing libraries
-av>=11.0.0                # Audio/video processing (FFmpeg wrapper)
+av>=13.0.0                # Audio/video processing (FFmpeg wrapper)
 pydub>=0.25.1             # Audio file manipulation and format conversion
 mutagen>=1.47.0           # Audio metadata (ID3 tags) reading
+psutil>=5.9.0             # Process memory (RSS) telemetry for leak monitoring
 
 # Note: CPU-only installation automatically selected when no --index-url specified
 # Note: Transcription will be slower than GPU but works on any system

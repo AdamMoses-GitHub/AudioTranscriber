@@ -8,6 +8,12 @@ from datetime import datetime
 from utilities.file_utils import FileUtils
 from utilities.format_utils import FormatUtils
 from config.constants import TIMESTAMP_FORMATS, TIMESTAMP_INTERVALS, DEFAULT_TIMESTAMP_FORMAT, DEFAULT_TIMESTAMP_INTERVAL
+from config.environment import TORCH_AVAILABLE
+
+if TORCH_AVAILABLE:
+    import torch
+else:
+    torch = None
 
 
 class BatchTab:
@@ -40,6 +46,8 @@ class BatchTab:
         self.create_timestamped_log = tk.BooleanVar(value=False)
         self.crash_telemetry_enabled = tk.BooleanVar(value=False)
         self.crash_telemetry_every_files = tk.IntVar(value=25)
+        self.safety_model_reload_enabled = tk.BooleanVar(value=False)
+        self.safety_model_reload_every_files = tk.IntVar(value=200)
         
         # Diarization variables
         self.diarization_enabled = tk.BooleanVar(value=False)
@@ -218,9 +226,34 @@ class BatchTab:
             row=0, column=4, padx=(5, 0)
         )
 
+        safety_reload_frame = ttk.Frame(opts_grid)
+        safety_reload_frame.grid(row=4, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        ttk.Checkbutton(
+            safety_reload_frame,
+            text="Safety model reload every",
+            variable=self.safety_model_reload_enabled,
+            command=self.app.save_config
+        ).grid(row=0, column=0, sticky="w")
+        reload_spin = ttk.Spinbox(
+            safety_reload_frame,
+            from_=50,
+            to=1000,
+            width=6,
+            textvariable=self.safety_model_reload_every_files,
+            command=self.app.save_config
+        )
+        reload_spin.grid(row=0, column=1, sticky="w", padx=(8, 4))
+        self.safety_model_reload_every_files.trace_add('write', lambda *args: self.app.save_config())
+        ttk.Label(safety_reload_frame, text="files (prevents native crashes)", foreground="gray", font=("Arial", 8)).grid(
+            row=0, column=2, sticky="w", padx=(4, 0)
+        )
+        ttk.Button(safety_reload_frame, text="?", width=3, command=self.show_safety_reload_help).grid(
+            row=0, column=3, padx=(5, 0)
+        )
+
         # Timestamp options
         timestamp_frame = ttk.Frame(opts_grid)
-        timestamp_frame.grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        timestamp_frame.grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 0))
         
         self.timestamps_checkbox = ttk.Checkbutton(
             timestamp_frame, 
@@ -264,7 +297,7 @@ class BatchTab:
         # Speaker Diarization section (optional feature)
         if self.app.environment.pyannote_available:
             diarization_frame = ttk.LabelFrame(opts_grid, text="Speaker Diarization (Optional)", padding="5")
-            diarization_frame.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+            diarization_frame.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(10, 0))
             
             diar_controls = ttk.Frame(diarization_frame)
             diar_controls.grid(row=0, column=0, sticky="w")
@@ -556,6 +589,8 @@ class BatchTab:
                 'skip_duplicates': False,
                 'crash_telemetry_enabled': self.crash_telemetry_enabled.get(),
                 'crash_telemetry_every_files': max(1, self.crash_telemetry_every_files.get()),
+                'safety_model_reload_enabled': self.safety_model_reload_enabled.get(),
+                'safety_model_reload_every_files': max(50, self.safety_model_reload_every_files.get()),
                 'diarization_enabled': False  # Default
             }
 
@@ -609,6 +644,46 @@ class BatchTab:
                 options['diarizer'] = self.app.diarizer
                 options['num_speakers'] = self.num_speakers.get() if self.num_speakers.get() > 0 else None
             
+            # Define model reload callback for safety reloads
+            def model_reload_callback():
+                """Cleanup and reload models to reset native library state."""
+                # Store current settings
+                current_engine = self.app.engine.get()
+                current_model_size = self.app.model_size.get()
+                current_compute_type = self.app.compute_type.get()
+                
+                # Cleanup
+                self.app.model_manager.cleanup_model()
+                if diarizer_loaded and self.app.diarizer:
+                    self.app.diarizer.cleanup()
+                
+                # Force garbage collection between cleanup and reload
+                import gc
+                gc.collect()
+                
+                # Clear CUDA cache if available
+                if TORCH_AVAILABLE:
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                    except Exception:
+                        pass  # Ignore CUDA cache errors
+                
+                # Reload transcription model (all three args are required)
+                success, error = self.app.model_manager.load_model(
+                    current_engine, current_model_size, current_compute_type
+                )
+                if not success:
+                    raise RuntimeError(f"Model reload failed: {error}")
+
+                # Reload diarization pipeline if it was in use. The Diarizer
+                # exposes load_pipeline() (not load_model) and needs the HF token.
+                if diarizer_loaded and self.app.diarizer:
+                    reload_hf_token = self.app.hf_token.get()
+                    if not self.app.diarizer.load_pipeline(reload_hf_token, whisper_loaded=True):
+                        raise RuntimeError("Diarization pipeline reload failed")
+            
             # Process batch
             results = self.app.batch_processor.process_batch(
                 self.input_folder,
@@ -616,7 +691,8 @@ class BatchTab:
                 options,
                 progress_callback=self._update_progress,
                 log_callback=self.log,
-                pre_scan_data=pre_scan_data
+                pre_scan_data=pre_scan_data,
+                model_reload_callback=model_reload_callback
             )
             self.batch_state = "Done"
             
@@ -1004,23 +1080,56 @@ class BatchTab:
         messagebox.showinfo("Batch Log File Help", help_text, parent=self.frame)
 
     def show_crash_telemetry_help(self):
-        """Show help dialog for crash telemetry snapshots option."""
+        """Show help dialog for crash telemetry option."""
         help_text = (
-            "Crash Telemetry Snapshots\n\n"
-            "Logs lightweight process memory snapshots every N completed files.\n\n"
-            "What gets logged:\n"
-            "  - Process RSS memory (MB)\n"
-            "  - CUDA memory allocated/reserved/peak (if GPU active)\n"
-            "  - CUDA free/total memory when available\n\n"
-            "Why this helps:\n"
-            "  - Shows whether memory climbs before hard crashes\n"
-            "  - Helps distinguish app-level issues from GPU/runtime instability\n\n"
-            "Notes:\n"
-            "  - Disabled by default\n"
-            "  - Writes to the same batch log output stream\n"
-            "  - Lower intervals create more log lines"
+            "Crash Telemetry\n\n"
+            "Logs memory metrics every N transcribed files to help diagnose crashes.\n\n"
+            "What it tracks:\n"
+            "  • Only counts actually transcribed files (skipped files excluded)\n"
+            "  • Process RSS memory (system RAM usage)\n"
+            "  • GPU memory: allocated, reserved, peak, free/total\n"
+            "  • Logged to console and batch log file\n\n"
+            "Use when:\n"
+            "  • Batch crashes without error messages\n"
+            "  • Need to correlate crash with memory state\n"
+            "  • Debugging stability issues\n\n"
+            "Overhead:\n"
+            "  • Negligible performance impact (~1ms per check)\n"
+            "  • Safe to leave enabled\n\n"
+            "Recommended:\n"
+            "  • Enable for large batches (300+ files)\n"
+            "  • Set interval to 25-50 transcribed files\n"
+            "  • Review telemetry logs before crash point\n\n"
+            "Note: Memory metrics help identify if crashes are OOM-related "
+            "or caused by other issues like GPU driver timeouts."
         )
         messagebox.showinfo("Crash Telemetry Help", help_text, parent=self.frame)
+
+    def show_safety_reload_help(self):
+        """Show help dialog for safety model reload option."""
+        help_text = (
+            "Safety Model Reload\n\n"
+            "Periodically unloads and reloads the model to prevent native library crashes.\n\n"
+            "Why this helps:\n"
+            "  • CTranslate2/CUDA can accumulate internal state corruption\n"
+            "  • Reloading resets native library state\n"
+            "  • Helps complete very large batches (500+ files)\n\n"
+            "Important:\n"
+            "  • Only counts TRANSCRIBED files (skipped files excluded)\n"
+            "  • Skipped files don't use the model, so don't cause corruption\n"
+            "  • Example: Skip 500, transcribe 200 → reload triggers at transcription #200\n\n"
+            "Tradeoffs:\n"
+            "  • Adds ~10-30 seconds overhead per reload\n"
+            "  • Interrupts processing briefly\n"
+            "  • Not needed for batches under 100 transcriptions\n\n"
+            "Recommended:\n"
+            "  • Enable if you're transcribing 200+ files\n"
+            "  • Set interval to 100-200 transcriptions\n"
+            "  • Works with skip_existing for automatic resume\n\n"
+            "Note: If crashes still occur, simply restart the batch - "
+            "skip_existing will resume automatically from where it stopped."
+        )
+        messagebox.showinfo("Safety Model Reload Help", help_text, parent=self.frame)
     
     def _on_timestamp_toggle(self):
         """Handle timestamp checkbox toggle."""
@@ -1080,6 +1189,8 @@ class BatchTab:
             'create_timestamped_log': self.create_timestamped_log.get(),
             'crash_telemetry_enabled': self.crash_telemetry_enabled.get(),
             'crash_telemetry_every_files': self.crash_telemetry_every_files.get(),
+            'safety_model_reload_enabled': self.safety_model_reload_enabled.get(),
+            'safety_model_reload_every_files': self.safety_model_reload_every_files.get(),
             'diarization_enabled': self.diarization_enabled.get(),
             'diarization_num_speakers': self.num_speakers.get(),
             'diarization_timestamp_mode': self.diarization_timestamp_mode.get()
@@ -1124,6 +1235,13 @@ class BatchTab:
                 self.crash_telemetry_every_files.set(max(1, int(config['crash_telemetry_every_files'])))
             except (TypeError, ValueError):
                 self.crash_telemetry_every_files.set(25)
+        if 'safety_model_reload_enabled' in config:
+            self.safety_model_reload_enabled.set(config['safety_model_reload_enabled'])
+        if 'safety_model_reload_every_files' in config:
+            try:
+                self.safety_model_reload_every_files.set(max(50, int(config['safety_model_reload_every_files'])))
+            except (TypeError, ValueError):
+                self.safety_model_reload_every_files.set(200)
         if 'diarization_enabled' in config:
             self.diarization_enabled.set(config['diarization_enabled'])
         if 'diarization_timestamp_mode' in config:

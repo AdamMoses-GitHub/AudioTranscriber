@@ -13,7 +13,7 @@ from utilities.file_utils import FileUtils
 from utilities.format_utils import FormatUtils
 from utilities.date_parser import DateParser
 from utilities.audio_utils import AudioUtils
-from config.constants import STATUS_SKIPPED, BYTES_PER_MB
+from config.constants import BYTES_PER_MB
 from config.environment import WAVE_AVAILABLE, MUTAGEN_AVAILABLE, TORCH_AVAILABLE
 
 if TORCH_AVAILABLE:
@@ -113,34 +113,21 @@ class BatchProcessor:
             log_callback(f"🧹 Memory trim completed")
 
     def _get_process_rss_mb(self):
-        """Get process RSS memory in MB when available. Safe to call anytime."""
-        try:
-            if os.name == 'nt':
-                class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
-                    _fields_ = [
-                        ('cb', ctypes.c_ulong),
-                        ('PageFaultCount', ctypes.c_ulong),
-                        ('PeakWorkingSetSize', ctypes.c_size_t),
-                        ('WorkingSetSize', ctypes.c_size_t),
-                        ('QuotaPeakPagedPoolUsage', ctypes.c_size_t),
-                        ('QuotaPagedPoolUsage', ctypes.c_size_t),
-                        ('QuotaPeakNonPagedPoolUsage', ctypes.c_size_t),
-                        ('QuotaNonPagedPoolUsage', ctypes.c_size_t),
-                        ('PagefileUsage', ctypes.c_size_t),
-                        ('PeakPagefileUsage', ctypes.c_size_t),
-                        ('PrivateUsage', ctypes.c_size_t),
-                    ]
+        """Get process RSS memory in MB when available. Safe to call anytime.
 
-                counters = PROCESS_MEMORY_COUNTERS_EX()
-                counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS_EX)
-                proc_handle = ctypes.windll.kernel32.GetCurrentProcess()
-                ok = ctypes.windll.psapi.GetProcessMemoryInfo(
-                    proc_handle,
-                    ctypes.byref(counters),
-                    counters.cb
-                )
-                if ok:
-                    return counters.WorkingSetSize / BYTES_PER_MB
+        Uses psutil when available (works on all platforms, including Windows,
+        without unstable ctypes calls). Falls back to the stdlib resource module
+        on POSIX. Returns None if neither is available.
+        """
+        try:
+            import psutil
+            return psutil.Process(os.getpid()).memory_info().rss / BYTES_PER_MB
+        except Exception:
+            pass
+
+        try:
+            # POSIX fallback (not available on Windows).
+            if os.name == 'nt':
                 return None
 
             import resource
@@ -150,7 +137,7 @@ class BatchProcessor:
                 return rss_kb / BYTES_PER_MB
             return float(rss_kb) / 1024.0
         except Exception:
-            # Silently return None if ctypes/system calls fail
+            # Silently return None if system calls fail
             return None
 
     def _get_gpu_memory_snapshot(self):
@@ -184,45 +171,59 @@ class BatchProcessor:
             # Silently return None if CUDA queries fail
             return None
 
-    def _maybe_log_crash_telemetry(self, options, log_callback=None):
-        """Emit optional crash telemetry line every N completed files."""
-        self._files_completed_for_telemetry += 1
-
-        if not options.get('crash_telemetry_enabled', False):
-            return
-        if not log_callback:
-            return
-
+    def _maybe_log_crash_telemetry(self, options, log_callback=None, file_was_transcribed=False):
+        """Emit optional crash telemetry line every N transcribed files.
+        
+        Args:
+            options: Batch options dict.
+            log_callback: Optional callback for log messages.
+            file_was_transcribed: True if the file was actually transcribed (not skipped).
+        """
         try:
-            every_n_files = int(options.get('crash_telemetry_every_files', 25))
-        except (TypeError, ValueError):
-            every_n_files = 25
+            # Only count files that were actually transcribed (used the model)
+            if not file_was_transcribed:
+                return
+            
+            self._files_completed_for_telemetry += 1
 
-        if every_n_files <= 0:
-            every_n_files = 25
+            if not options.get('crash_telemetry_enabled', False):
+                return
+            if not log_callback:
+                return
 
-        if (self._files_completed_for_telemetry % every_n_files) != 0:
-            return
+            try:
+                every_n_files = int(options.get('crash_telemetry_every_files', 25))
+            except (TypeError, ValueError):
+                every_n_files = 25
 
-        rss_mb = self._get_process_rss_mb()
-        gpu = self._get_gpu_memory_snapshot()
+            if every_n_files <= 0:
+                every_n_files = 25
 
-        parts = [f"🩺 Crash telemetry: files={self._files_completed_for_telemetry}"]
-        if rss_mb is not None:
-            parts.append(f"rss={rss_mb:.1f}MB")
-        else:
-            parts.append("rss=n/a")
+            if (self._files_completed_for_telemetry % every_n_files) != 0:
+                return
 
-        if gpu is not None:
-            parts.append(f"gpu_alloc={gpu['allocated_mb']:.1f}MB")
-            parts.append(f"gpu_res={gpu['reserved_mb']:.1f}MB")
-            parts.append(f"gpu_peak={gpu['peak_allocated_mb']:.1f}MB")
-            if gpu['free_mb'] is not None and gpu['total_mb'] is not None:
-                parts.append(f"gpu_free={gpu['free_mb']:.1f}MB/{gpu['total_mb']:.1f}MB")
-        else:
-            parts.append("gpu=n/a")
+            rss_mb = self._get_process_rss_mb()
+            gpu = self._get_gpu_memory_snapshot()
 
-        log_callback(" | ".join(parts))
+            parts = [f"🩺 Crash telemetry: transcribed={self._files_completed_for_telemetry}"]
+            if rss_mb is not None:
+                parts.append(f"rss={rss_mb:.1f}MB")
+            else:
+                parts.append("rss=n/a")
+
+            if gpu is not None:
+                parts.append(f"gpu_alloc={gpu['allocated_mb']:.1f}MB")
+                parts.append(f"gpu_res={gpu['reserved_mb']:.1f}MB")
+                parts.append(f"gpu_peak={gpu['peak_allocated_mb']:.1f}MB")
+                if gpu['free_mb'] is not None and gpu['total_mb'] is not None:
+                    parts.append(f"gpu_free={gpu['free_mb']:.1f}MB/{gpu['total_mb']:.1f}MB")
+            else:
+                parts.append("gpu=n/a")
+
+            log_callback(" | ".join(parts))
+        except Exception:
+            # Silently skip telemetry if anything fails - don't let it crash the batch
+            pass
 
     def _quick_content_fingerprint(self, file_path, chunk_size=128 * 1024):
         """Create a fast fingerprint from file size + first/last chunk."""
@@ -529,7 +530,7 @@ class BatchProcessor:
 
         return pre_scan_data
     
-    def process_batch(self, input_folder, output_folder, options, progress_callback=None, log_callback=None, pre_scan_data=None):
+    def process_batch(self, input_folder, output_folder, options, progress_callback=None, log_callback=None, pre_scan_data=None, model_reload_callback=None):
         """Process a batch of audio files.
         
         Args:
@@ -537,9 +538,10 @@ class BatchProcessor:
             output_folder: Output folder path.
             options: Dictionary of processing options (detect_date, chars_per_line, skip_existing, 
                     preserve_structure, recursive, create_summary, engine, timestamps_enabled, 
-                    timestamp_format, timestamp_interval).
+                    timestamp_format, timestamp_interval, safety_model_reload_enabled, safety_model_reload_every_files).
             progress_callback: Optional callback for progress updates (file_num, total, current_file).
             log_callback: Optional callback for log messages.
+            model_reload_callback: Optional callback to trigger model reload (receives no args, returns None).
             
         Returns:
             Dictionary with statistics (total, successful, failed, total_time).
@@ -602,6 +604,23 @@ class BatchProcessor:
         
         if log_callback:
             log_callback(f"Found {self.total_files} audio files to process")
+
+            # Summarize skipped files ONCE at the top instead of listing each
+            # skipped file individually throughout the batch log.
+            existing_skips = self.pre_scan_summary.get('existing_transcript_skips', 0)
+            duplicate_skips = self.pre_scan_summary.get('duplicate_content_skips', 0)
+            total_skips = existing_skips + duplicate_skips
+            if total_skips > 0:
+                parts = []
+                if existing_skips:
+                    parts.append(f"{existing_skips} already transcribed")
+                if duplicate_skips:
+                    parts.append(f"{duplicate_skips} duplicate content")
+                to_transcribe = max(0, self.total_files - total_skips)
+                log_callback(
+                    f"⏭️  Skipping {total_skips} file(s) "
+                    f"({', '.join(parts)}); {to_transcribe} file(s) to transcribe"
+                )
         
         # Process each file
         for i, file_plan in enumerate(self.scan_plan):
@@ -675,10 +694,35 @@ class BatchProcessor:
 
             self._set_current_file_state(step=status)
 
-            self.processed_files = i + 1
+            # Determine if this file was successfully transcribed (not skipped, not failed)
+            file_was_transcribed = (status == 'success')
 
-            # Optional per-file telemetry and memory management (end of batch loop iteration)
-            self._maybe_log_crash_telemetry(options, log_callback)
+            # Optional per-file telemetry (end of batch loop iteration)
+            try:
+                self._maybe_log_crash_telemetry(options, log_callback, file_was_transcribed=file_was_transcribed)
+            except Exception:
+                pass  # Never let telemetry crash the batch
+
+            # Safety model reload to prevent native crashes (only count successful transcriptions)
+            if file_was_transcribed and options.get('safety_model_reload_enabled', False) and model_reload_callback:
+                try:
+                    reload_interval = max(50, int(options.get('safety_model_reload_every_files', 200)))
+                except (TypeError, ValueError):
+                    reload_interval = 200
+                
+                transcribed_count = self._files_completed_for_telemetry
+                if transcribed_count > 0 and (transcribed_count % reload_interval) == 0:
+                    if log_callback:
+                        log_callback(f"🔄 Safety model reload after {transcribed_count} transcriptions...")
+                    try:
+                        model_reload_callback()
+                        if log_callback:
+                            log_callback("✅ Model reloaded successfully")
+                    except Exception as e:
+                        if log_callback:
+                            log_callback(f"❌ Model reload failed: {e}")
+                            log_callback("⚠️ Stopping batch - model reload failure is unrecoverable")
+                        raise  # Stop batch if reload fails - can't continue without model
 
             if progress_callback:
                 progress_callback(self.processed_files, self.total_files, audio_file)
@@ -722,21 +766,13 @@ class BatchProcessor:
         if display_index is None:
             display_index = self.processed_files
         
-        if log_callback:
-            log_callback(f"[{display_index}/{self.total_files}] Processing: {file_name}")
-        
-        start_time = time.time()
-        self._set_current_file_state(audio_file=audio_file, step='preparing', start_now=True)
-        
         try:
             # Determine output path
             output_file = self._build_output_file_path(audio_file, input_folder, output_folder, options)
             
-            # Skip if exists
+            # Skip if exists (counted quietly; summarized once at batch top)
             if options.get('skip_existing', True) and os.path.exists(output_file):
                 self._set_current_file_state(step='skipped')
-                if log_callback:
-                    log_callback(f"{STATUS_SKIPPED} Skipped (already exists): {os.path.basename(output_file)}")
                 self.skipped_files += 1
 
                 return {
@@ -747,11 +783,9 @@ class BatchProcessor:
                     'duration': file_plan.get('estimated_duration_seconds', 0) if file_plan is not None else 0
                 }
 
-            # Skip known duplicate-content files from pre-scan.
+            # Skip known duplicate-content files from pre-scan (counted quietly).
             if file_plan is not None and file_plan.get('will_skip_duplicate', False):
                 self._set_current_file_state(step='skipped')
-                if log_callback:
-                    log_callback(f"{STATUS_SKIPPED} Skipped duplicate content: {file_name}")
                 self.skipped_files += 1
                 est_duration = float(file_plan.get('estimated_duration_seconds', 0) or 0)
 
@@ -762,6 +796,13 @@ class BatchProcessor:
                     'words_per_second': None,
                     'duration': est_duration
                 }
+
+            # File will actually be transcribed: log it now (skipped files are
+            # never logged individually, only summarized at the top).
+            if log_callback:
+                log_callback(f"[{display_index}/{self.total_files}] Processing: {file_name}")
+
+            start_time = time.time()
             
             # Get file size once and reuse to avoid repeated filesystem calls.
             file_size_bytes = os.path.getsize(audio_file)

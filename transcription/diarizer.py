@@ -3,9 +3,14 @@ import torch
 import av
 import numpy as np
 import os
+import gc
 import tempfile
 import traceback
 import warnings
+
+# Suppress benign HuggingFace symlink warning on Windows (no Developer Mode)
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
 from typing import Optional, List, Tuple
 from config.environment import PYANNOTE_AVAILABLE
 from config.constants import (
@@ -20,6 +25,10 @@ logger = get_logger(__name__)
 
 if PYANNOTE_AVAILABLE:
     from pyannote.audio import Pipeline
+    try:
+        from huggingface_hub import login as hf_login
+    except ImportError:
+        hf_login = None
 
 
 class Diarizer:
@@ -76,11 +85,17 @@ class Diarizer:
             logger.info(f"Loading diarization pipeline: {self.model_name}")
             logger.info(f"Using device: {self.device}")
             
-            # Load pipeline from Hugging Face
-            self.pipeline = Pipeline.from_pretrained(
-                self.model_name,
-                token=hf_token
-            )
+            # Authenticate with HuggingFace Hub
+            if hf_login:
+                logger.debug("Authenticating with HuggingFace Hub")
+                hf_login(token=hf_token, add_to_git_credential=False)
+            else:
+                # Fallback to environment variable
+                os.environ['HUGGINGFACE_TOKEN'] = hf_token
+                os.environ['HF_TOKEN'] = hf_token
+            
+            # Load pipeline from Hugging Face (token is handled by login/env var)
+            self.pipeline = Pipeline.from_pretrained(self.model_name)
             
             # Move to appropriate device
             self.pipeline.to(self.device)
@@ -207,9 +222,19 @@ class Diarizer:
                     logger.info("Invoking pyannote pipeline with explicit speaker count")
                     diarization = self.pipeline(audio, num_speakers=num_speakers)
                 else:
-                    logger.info("Diarizing with auto-detect speakers")
-                    logger.info("Invoking pyannote pipeline with auto speaker detection")
-                    diarization = self.pipeline(audio)
+                    # Auto-detect, but BOUND the search with min/max speakers.
+                    # Without an upper bound, pyannote over-segments long (multi-hour)
+                    # recordings into dozens of phantom speakers, which both ruins
+                    # label quality and inflates host-RAM clustering structures.
+                    logger.info(
+                        "Diarizing with auto-detect speakers (bounded: min=%s max=%s)",
+                        MIN_SPEAKERS, MAX_SPEAKERS
+                    )
+                    diarization = self.pipeline(
+                        audio,
+                        min_speakers=MIN_SPEAKERS,
+                        max_speakers=MAX_SPEAKERS
+                    )
 
             logger.info(
                 "Pyannote pipeline returned: type=%s attrs=%s",
@@ -245,10 +270,28 @@ class Diarizer:
             return timeline
             
         except Exception as e:
-            logger.error("Error during diarization: %s", e)
+            logger.error("Error during diarization: %s [%s]", e, type(e).__name__)
             logger.debug("Diarization traceback:\n%s", traceback.format_exc())
-            raise RuntimeError(f"Diarization failed: {e}")
+            # Preserve the original exception type name so callers can classify
+            # the failure accurately instead of masking it behind a generic label.
+            raise RuntimeError(f"Diarization failed: {type(e).__name__}: {e}")
         finally:
+            # Critical: release both GPU and HOST memory between files. Long
+            # multi-hour recordings allocate large host-side clustering tensors
+            # inside pyannote; without an explicit gc pass these accumulate
+            # across a batch and eventually exhaust system RAM.
+            try:
+                if 'diarization' in locals():
+                    del diarization
+                if 'annotation' in locals():
+                    del annotation
+                if 'waveform' in locals() and waveform is not None:
+                    del waveform
+                if 'audio' in locals():
+                    del audio
+            except Exception:
+                pass
+
             if mmap_audio is not None:
                 try:
                     mmap_audio._mmap.close()
@@ -259,6 +302,14 @@ class Diarizer:
                     os.remove(temp_pcm_path)
                 except OSError:
                     pass
+
+            # Force host-side garbage collection, then clear the GPU cache.
+            try:
+                gc.collect()
+                if self.device and self.device.type == "cuda":
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
     
     def cleanup(self):
         """Free GPU memory used by diarization pipeline."""
